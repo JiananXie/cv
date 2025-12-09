@@ -92,6 +92,6 @@ checkpoints/
             └── opt_test.txt
 ```
 ## 7. 复现结果 (Reproduction Results)
-| Dataset       | beta | PoseNet (Report in paper) | PoseNet | PoseLSTM (Report in paer) | PoseLSTM |
+| Dataset       | beta | PoseNet(Report) | PoseNet(reproduce) | PoseLSTM(Report) | PoseLSTM(reproduce) |
 | ------------- |:----:| :----: | :----: | :----: | :----: |
-| King's College  | 500  | 1.92m 5.40° | 1.33m 3.09° | 0.99m 3.65° | 0.94m 2.61°|
+| King's College  | 500  | 1.92m 5.40° | **1.33m 3.09°** | 0.99m 3.65° | **0.94m 2.61°**|
