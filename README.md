@@ -41,6 +41,7 @@ wget https://vision.in.tum.de/webarchive/hazirbas/poselstm-pytorch/places-google
 ```bash
 python util/compute_image_mean.py --dataroot datasets/KingsCollege --height 256 --width 256 --save_resized_imgs
 ```
+**这一步会裁剪图片并保存替换，只需要运行一次即可**
 
 **第二步：开始训练**
 ```bash
@@ -52,7 +53,7 @@ python train.py \
     --beta 500 \
     --gpu_ids 0
 ```
-*注意：请根据实际情况修改 `--gpu_ids` 参数。*
+参数可以自己调整，train
 
 ## 4. 测试 (Testing)
 
@@ -89,14 +90,4 @@ checkpoints/
             ├── 490_net_G.pth
             ├── opt_train.txt
             └── opt_test.txt
-```
-
-然后可以直接运行测试命令（指定 epoch 为 490）：
-```bash
-python test.py \
-    --model posenet \
-    --dataroot ./datasets/KingsCollege \
-    --name posenet/KingsCollege/beta500 \
-    --gpu_ids 0 \
-    --which_epoch 490
 ```
