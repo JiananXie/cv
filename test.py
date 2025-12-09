@@ -34,7 +34,6 @@ def parse_args():
     # Test options
     parser.add_argument('--results_dir', type=str, default='./results/', help='saves results here.')
     parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
-    parser.add_argument('--which_epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
 
     opt = parser.parse_args()
     opt.isTrain = False
@@ -79,10 +78,22 @@ if not os.path.exists(results_dir):
     os.makedirs(results_dir)
 
 besterror  = [0, float('inf'), float('inf')] # nepoch, medX, medQ
-if opt.model == 'posenet':
-    testepochs = numpy.arange(450, 500+1, 10)
-else:
-    testepochs = numpy.arange(450, 1200+1, 10)
+
+import glob
+expr_dir = os.path.join(opt.checkpoints_dir, opt.name)
+files = glob.glob(os.path.join(expr_dir, '*_net_G.pth'))
+epochs = []
+for f in files:
+    fname = os.path.basename(f)
+    try:
+        epoch_str = fname.split('_')[0]
+        if epoch_str != 'latest':
+            epochs.append(int(epoch_str))
+    except ValueError:
+        pass
+epochs.sort()
+testepochs = epochs[-10:] # Take last 10 epochs
+print("Testing epochs:", testepochs)
 
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')
 testfile.write('epoch medX  medQ\n')
