@@ -1,0 +1,26 @@
+------------ Options -------------
+batchSize: 75
+beta: 500
+checkpoints_dir: ./checkpoints
+dataroot: ./datasets/KingsCollege
+display_id: 0
+display_port: 8097
+display_winsize: 224
+fineSize: 224
+gpu_ids: [4]
+input_nc: 3
+isTrain: False
+loadSize: 256
+lstm_hidden_size: 256
+max_dataset_size: inf
+model: posenet
+nThreads: 8
+name: posenet/KingsCollege/beta500
+no_dropout: False
+output_nc: 7
+phase: test
+results_dir: ./results/
+seed: 0
+serial_batches: False
+which_epoch: latest
+-------------- End ----------------
