@@ -1,6 +1,6 @@
 # PoseNet PyTorch 复现指南
 
-本项目实现了基于 PyTorch 的 PoseNet 模型，用于相机位姿回归任务。
+本项目实现了基于 PyTorch 的 PoseNet 模型，用于相机位姿回归任务。框架基于[poselstm-pytorch](https://github.com/hazirbas/poselstm-pytorch)修改，精简重写了代码。当前的实现基本按照Posenet原文的设置，替换了SGD为Adam优化器，尚未测试LSTM版本。
 
 ## 1. 环境依赖
 含有torch和torchvision的Python环境都可以
@@ -53,7 +53,7 @@ python train.py \
     --beta 500 \
     --gpu_ids 0
 ```
-参数可以自己调整，train
+参数可以自己调整，train.sh是我复现的参数，可以修改。
 
 ## 4. 测试 (Testing)
 
