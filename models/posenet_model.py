@@ -41,8 +41,8 @@ class PoseNetModel(BaseModel):
                                       init_from=googlenet_weights, isTest=not self.isTrain,
                                       gpu_ids = self.gpu_ids)
 
-        if not self.isTrain or opt.continue_train:
-            self.load_network(self.netG, 'G', opt.which_epoch)
+        # if not self.isTrain or opt.continue_train:
+        #     self.load_network(self.netG, 'G', opt.which_epoch)
 
         if self.isTrain:
             self.old_lr = opt.lr
