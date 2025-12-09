@@ -92,7 +92,10 @@ for f in files:
     except ValueError:
         pass
 epochs.sort()
-testepochs = epochs[-10:] # Take last 10 epochs
+if opt.model == 'posenet':
+    testepochs = epochs[-10:] # Take last 10 epochs
+else:
+    testepochs = epochs[-50:]  # Take last 50 epochs
 print("Testing epochs:", testepochs)
 
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')

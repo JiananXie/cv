@@ -18,3 +18,17 @@ python train.py \
     --seed 42 > train_posenet.log 2>&1
 echo "Step 2 Finished: Training complete. Logs saved to train_posenet.log"
 
+echo "Step 3: Starting PoseLSTM training..."
+# 3. Train PoseLSTM
+python train.py \
+    --model poselstm \
+    --init_weights pretrained_models/places-googlenet.pickle \
+    --dataroot ./datasets/KingsCollege \
+    --name poselstm/KingsCollege/beta500 \
+    --beta 500 \
+    --gpu_ids 4 \
+    --n_epochs 1200 \
+    --save_epoch_freq 10 \
+    --seed 42 > train_poselstm.log 2>&1
+echo "Step 3 Finished: Training complete. Logs saved to train_poselstm.log"
+

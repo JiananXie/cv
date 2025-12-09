@@ -18,10 +18,12 @@ class PoseLSTModel(BaseModel):
         BaseModel.initialize(self, opt)
         self.isTrain = opt.isTrain
         # define tensors
-        self.input_A = self.Tensor(opt.batchSize, opt.input_nc,
-                                   opt.fineSize, opt.fineSize)
-        self.input_B = self.Tensor(opt.batchSize, opt.output_nc)
-
+        self.input_A = torch.zeros(opt.batchSize, opt.input_nc, opt.fineSize, opt.fineSize)
+        self.input_B = torch.zeros(opt.batchSize, opt.output_nc)
+        if self.gpu_ids:
+            self.input_A = self.input_A.cuda(self.gpu_ids[0])
+            self.input_B = self.input_B.cuda(self.gpu_ids[0])
+            
         # load/define networks
         googlenet_weights = None
         if self.isTrain and opt.init_weights != '':
@@ -35,8 +37,8 @@ class PoseLSTModel(BaseModel):
                                       init_from=googlenet_weights, isTest=not self.isTrain,
                                       gpu_ids = self.gpu_ids)
 
-        if not self.isTrain or opt.continue_train:
-            self.load_network(self.netG, 'G', opt.which_epoch)
+        # if not self.isTrain or opt.continue_train:
+        #     self.load_network(self.netG, 'G', opt.which_epoch)
 
         if self.isTrain:
             self.old_lr = opt.lr
