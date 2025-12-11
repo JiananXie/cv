@@ -1,8 +1,12 @@
 import torch
 from data.pose_dataset import PoseDataset
+from data.scenes_dataset import ScenesDataset
 
 def CreateDataLoader(opt):
-    dataset = PoseDataset(opt)
+    if "cambridge" in opt.dataroot or "KingsCollege" in opt.dataroot:
+        dataset = PoseDataset(opt)
+    elif "7scenes" in opt.dataroot or "chess" in opt.dataroot:
+        dataset = ScenesDataset(opt)
     print("dataset [%s] was created" % (type(dataset).__name__))
     dataloader = torch.utils.data.DataLoader(
         dataset,

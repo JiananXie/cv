@@ -8,7 +8,7 @@
 ## 2. 数据准备
 
 ### 数据集
-请将数据集放置在 `datasets/` 目录下。例如 `datasets/KingsCollege`。
+请将数据集放置在 `datasets/` 目录下。例如 `datasets/cambridge/KingsCollege`。
 数据集结构应包含：
 - `dataset_train.txt`: 训练集列表
 - `dataset_test.txt`: 测试集列表
@@ -23,6 +23,21 @@ wget -O KingsCollege.zip https://www.repository.cam.ac.uk/bitstreams/1cd2b04b-ad
 
 unzip kingscollege_data.zip
 rm kingscollege_data.zip
+```
+数据集文件结构如下：
+```
+datasets/
+└── posenet/
+    ├── cambridge/
+    │   ├── KingsCollege
+    │   ├── OldHospital
+    │   ├──    
+    │   ...    
+    │
+    ├── 7scenes    
+    ... ├── chess
+        ├── fire   
+        ... 
 ```
 
 ### 预训练模型
