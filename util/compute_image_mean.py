@@ -20,11 +20,11 @@ args = params()
 dataroot = args.dataroot
 imsize = [args.height, args.width] # (H, W)
 imlist = []
-if "cambridge" in dataroot or "KingsCollege" in dataroot:
+if "cambridge" in dataroot:
     imlist = np.loadtxt(jpath(dataroot, 'dataset_train.txt'),
                         dtype=str, delimiter=' ', skiprows=3, usecols=(0))
     imlist = [jpath(dataroot, impath) for impath in imlist]
-elif "7scenes" in dataroot or "chess" in dataroot:
+elif "7scenes" in dataroot:
     split_file = os.path.join(dataroot, 'TrainSplit.txt')
     with open(split_file, 'r') as f:
         split_file_lines = f.readlines()
@@ -52,11 +52,11 @@ np.save(jpath(dataroot, 'mean_image.npy'), mean_image)
 # save resized test images
 if args.save_resized_imgs:
     imlist = []
-    if "cambridge" in dataroot or "KingsCollege" in dataroot:
+    if "cambridge" in dataroot:
         imlist = np.loadtxt(jpath(dataroot, 'dataset_test.txt'),
                             dtype=str, delimiter=' ', skiprows=3, usecols=(0))
         imlist = [jpath(dataroot, impath) for impath in imlist]
-    elif "7scenes" in dataroot or "chess" in dataroot:
+    elif "7scenes" in dataroot:
         split_file = os.path.join(dataroot, 'TestSplit.txt')
         with open(split_file, 'r') as f:
             split_file_lines = f.readlines()
