@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import os
 from collections import OrderedDict
@@ -7,6 +8,7 @@ from torch.autograd import Variable
 import util.util as util
 from .base_model import BaseModel
 from . import networks
+from .losses import ReprojectionLoss
 import pickle
 import numpy
 
@@ -37,17 +39,38 @@ class PoseNetModel(BaseModel):
                 
         self.mean_image = np.load(os.path.join(opt.dataroot , 'mean_image.npy'))
 
-        self.netG = networks.define_network(opt.input_nc, None, opt.model,
+        # Handle hidden sizes for LSTM and Transformer models
+        lstm_hidden_size = opt.lstm_hidden_size if opt.model == 'poselstm' else None
+        transformer_hidden_size = opt.transformer_hidden_size if opt.model == 'posetransformer' else None
+
+        self.netG = networks.define_network(opt.input_nc, lstm_hidden_size, opt.model,
                                       init_from=googlenet_weights, isTest=not self.isTrain,
-                                      gpu_ids = self.gpu_ids)
+                                      gpu_ids = self.gpu_ids, transformer_hidden_size=transformer_hidden_size)
 
         # if not self.isTrain or opt.continue_train:
         #     self.load_network(self.netG, 'G', opt.which_epoch)
 
         if self.isTrain:
+            self.loss_type = opt.loss_type
             self.old_lr = opt.lr
             # define loss functions
             self.criterion = torch.nn.MSELoss()
+            if self.loss_type == 'geo':
+                self.sx = nn.Parameter(torch.tensor(0.0))
+                self.sq = nn.Parameter(torch.tensor(-3.0))
+            
+            # Initialize Reprojection Loss
+            # Note: Focal length needs to be accurate. 
+            # Assuming KingsCollege default ~1670 for 1920x1080, scaled to fineSize (224)
+            # Scale factor = 256 / 1920 (based on loadSize) -> then crop to 224
+            # Actually, PoseDataset resizes to (loadSize, loadSize) ignoring aspect ratio?
+            # Let's assume a reasonable focal length approximation or pass it via opt
+            # For now, using a hardcoded approximation based on typical Cambridge Landmarks setup
+            # If original is 1920 width, f=1670. New width is 256.
+            # f_new = 1670 * (256 / 1920) ~= 222.6
+            focal_length = 1563 * (opt.loadSize / 1920.0) 
+            self.reprojection_loss = ReprojectionLoss(focal_length, (opt.fineSize, opt.fineSize), 
+                                                      device=self.gpu_ids[0] if self.gpu_ids else 'cpu')
 
             # initialize optimizers
             self.schedulers = []
@@ -86,14 +109,42 @@ class PoseNetModel(BaseModel):
         self.loss_G = 0
         self.loss_pos = 0
         self.loss_ori = 0
+        self.loss_reproj = 0
+        
+
         loss_weights = [0.3, 0.3, 1]
-        for l, w in enumerate(loss_weights):
-            mse_pos = self.criterion(self.pred_B[2*l], self.input_B[:, 0:3])
-            ori_gt = F.normalize(self.input_B[:, 3:], p=2, dim=1)
-            mse_ori = self.criterion(self.pred_B[2*l+1], ori_gt)
-            self.loss_G += (mse_pos + mse_ori * self.opt.beta) * w
+        loop_range = 3
+
+        for l in range(loop_range):
+            w = loss_weights[l]
+            pred_pos = self.pred_B[2*l]
+            pred_ori = self.pred_B[2*l+1]
+            target_pos = self.input_B[:, 0:3]
+            target_ori = F.normalize(self.input_B[:, 3:], p=2, dim=1)
+            
+            # Standard PoseNet Loss
+            mse_pos = self.criterion(pred_pos, target_pos)
+            mse_ori = self.criterion(pred_ori, target_ori)
+            
+            # Reprojection Loss (Geometric Consistency)
+            reproj_loss = self.reprojection_loss(pred_pos, pred_ori, target_pos, target_ori)
+            
+            # Combine losses
+            if self.loss_type == 'geo':
+                loss_pos = torch.exp(-self.sx) * mse_pos + self.sx
+                loss_ori = torch.exp(-self.sq) * mse_ori + self.sq
+                total_loss = loss_pos + loss_ori
+            else:
+                total_loss = mse_pos + mse_ori * self.opt.beta
+
+            gamma = 0.1 
+            # total_loss += reproj_loss * gamma
+            
+            self.loss_G += total_loss * w
             self.loss_pos += mse_pos.item() * w
             self.loss_ori += mse_ori.item() * w * self.opt.beta
+            self.loss_reproj += reproj_loss.item() * w
+
         self.loss_G.backward()
 
     def optimize_parameters(self):
@@ -106,17 +157,32 @@ class PoseNetModel(BaseModel):
         if self.opt.isTrain:
             return OrderedDict([('pos_err', self.loss_pos),
                                 ('ori_err', self.loss_ori),
+                                ('reproj_err', self.loss_reproj),
                                 ])
 
-        pos_err = torch.dist(self.pred_B[0], self.input_B[:, 0:3])
+        # Batch processing for test time
+        # pred_B[0] is position (B, 3), input_B[:, 0:3] is target position (B, 3)
+        pos_err = torch.dist(self.pred_B[0], self.input_B[:, 0:3], p=2) # This computes scalar distance for whole batch if not careful
+        # Correct way for batch:
+        diff_pos = self.pred_B[0] - self.input_B[:, 0:3]
+        pos_errs = torch.norm(diff_pos, p=2, dim=1) # (B,)
+
         ori_gt = F.normalize(self.input_B[:, 3:], p=2, dim=1)
-        abs_distance = torch.abs((ori_gt.mul(self.pred_B[1])).sum())
-        ori_err = 2*180/numpy.pi* torch.acos(abs_distance)
-        return [pos_err.item(), ori_err.item()]
+        pred_ori = self.pred_B[1]
+        
+        # Dot product for orientation
+        # (B, 4) * (B, 4) -> sum(dim=1) -> (B,)
+        abs_distance = torch.abs((ori_gt * pred_ori).sum(dim=1))
+        # Clamp to avoid numerical issues with acos
+        abs_distance = torch.clamp(abs_distance, -1.0, 1.0)
+        ori_errs = 2 * 180 / numpy.pi * torch.acos(abs_distance) # (B,)
+        
+        return [pos_errs.detach().cpu().numpy(), ori_errs.detach().cpu().numpy()]
 
     def get_current_pose(self):
-        return numpy.concatenate((self.pred_B[0].data[0].cpu().numpy(),
-                                  self.pred_B[1].data[0].cpu().numpy()))
+        # Return batch of poses: (B, 7)
+        return numpy.concatenate((self.pred_B[0].data.cpu().numpy(),
+                                  self.pred_B[1].data.cpu().numpy()), axis=1)
 
     def get_current_visuals(self):
         input_A = util.tensor2im(self.input_A.data)

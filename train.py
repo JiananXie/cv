@@ -11,13 +11,14 @@ from util import util
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # Base options
-    parser.add_argument('--dataroot', required=True, help='path to images (should have subfolders trainA, trainB, valA, valB, etc)')
+    parser.add_argument('--dataroot', required=True, help='path to images')
     parser.add_argument('--batchSize', type=int, default=75, help='input batch size')
     parser.add_argument('--loadSize', type=int, default=256, help='scale images to this size')
     parser.add_argument('--fineSize', type=int, default=224, help='then crop to this size')
     parser.add_argument('--input_nc', type=int, default=3, help='# of input image channels')
     parser.add_argument('--output_nc', type=int, default=7, help='# of output image channels')
     parser.add_argument('--lstm_hidden_size', type=int, default=256, help='hidden size of the LSTM layer in PoseLSTM')
+    parser.add_argument('--transformer_hidden_size', type=int, default=256, help='hidden size of the Transformer layer in PoseTransformer')
     parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
     parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment. It decides where to store samples and models')
     parser.add_argument('--model', type=str, default='posenet', help='chooses which model to use. [posenet | poselstm | resnet50]')
@@ -31,6 +32,7 @@ def parse_args():
     parser.add_argument('--max_dataset_size', type=int, default=float("inf"), help='Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.')
     parser.add_argument('--seed', type=int, default=42, help='initial random seed for deterministic results')
     parser.add_argument('--beta', type=float, default=500, help='beta factor used in posenet.')
+    parser.add_argument('--loss_type', type=str, default='mse', help='type of loss function to use: [mse | geo]')
 
     # Train options
     parser.add_argument('--display_freq', type=int, default=100, help='frequency of showing training results on screen')
@@ -81,51 +83,55 @@ def parse_args():
         opt_file.write('-------------- End ----------------\n')
     return opt
 
-opt = parse_args()
+def main():
+    opt = parse_args()
 
-## SEEDING
-torch.manual_seed(opt.seed)
-numpy.random.seed(opt.seed)
-random.seed(opt.seed)
-# torch.backends.cudnn.enabled = False
-torch.backends.cudnn.deterministic = True
-## SEEDING
+    ## SEEDING
+    torch.manual_seed(opt.seed)
+    numpy.random.seed(opt.seed)
+    random.seed(opt.seed)
+    # torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.deterministic = True
+    ## SEEDING
 
-data_loader = CreateDataLoader(opt)
-dataset = data_loader
-dataset_size = len(data_loader.dataset)
-print('#training images = %d' % dataset_size)
+    data_loader = CreateDataLoader(opt)
+    dataset = data_loader
+    dataset_size = len(data_loader.dataset)
+    print('#training images = %d' % dataset_size)
 
-model = create_model(opt)
-total_steps = 0
+    model = create_model(opt)
+    total_steps = 0
 
-for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
-    epoch_start_time = time.time()
-    epoch_iter = 0
+    for epoch in range(opt.epoch_count, opt.n_epochs + opt.n_epochs_decay + 1):
+        epoch_start_time = time.time()
+        epoch_iter = 0
 
-    for i, data in enumerate(dataset):
-        iter_start_time = time.time()
-        total_steps += opt.batchSize
-        epoch_iter += opt.batchSize
-        model.set_input(data)
-        model.optimize_parameters()
+        for i, data in enumerate(dataset):
+            iter_start_time = time.time()
+            total_steps += opt.batchSize
+            epoch_iter += opt.batchSize
+            model.set_input(data)
+            model.optimize_parameters()
 
-        if total_steps % opt.print_freq == 0:
-            errors = model.get_current_errors()
-            t = (time.time() - iter_start_time) / opt.batchSize
-            util.print_current_errors(epoch, epoch_iter, errors, t)
+            if total_steps % opt.print_freq == 0:
+                errors = model.get_current_errors()
+                t = (time.time() - iter_start_time) / opt.batchSize
+                util.print_current_errors(epoch, epoch_iter, errors, t)
 
-        # if total_steps % opt.save_latest_freq == 0:
-        #     print('saving the latest model (epoch %d, total_steps %d)' %
-        #           (epoch, total_steps))
-        #     model.save('latest')
+            # if total_steps % opt.save_latest_freq == 0:
+            #     print('saving the latest model (epoch %d, total_steps %d)' %
+            #           (epoch, total_steps))
+            #     model.save('latest')
 
-    if epoch % opt.save_epoch_freq == 0:
-        print('saving the model at the end of epoch %d, iters %d' %
-              (epoch, total_steps))
-        model.save('latest')
-        model.save(epoch)
+        if epoch % opt.save_epoch_freq == 0:
+            print('saving the model at the end of epoch %d, iters %d' %
+                  (epoch, total_steps))
+            model.save('latest')
+            model.save(epoch)
 
-    print('End of epoch %d / %d \t Time Taken: %d sec' %
-          (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
-    model.update_learning_rate()
+        print('End of epoch %d / %d \t Time Taken: %d sec' %
+              (epoch, opt.n_epochs + opt.n_epochs_decay, time.time() - epoch_start_time))
+        model.update_learning_rate()
+
+if __name__ == "__main__":
+    main()

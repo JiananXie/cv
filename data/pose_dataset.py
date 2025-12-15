@@ -23,8 +23,23 @@ class PoseDataset(data.Dataset):
         self.image_paths = [os.path.join(self.root, path) for path in self.image_paths]
         
         self.poses = np.loadtxt(split_file, dtype=float, delimiter=' ', skiprows=3, usecols=(1, 2, 3, 4, 5, 6, 7))
-        
-        # Load mean image if needed
+        # Filter out specific frames for GreatCourt dataset
+        if 'GreatCourt' in self.root:
+            keep_indices = []
+            for i, path in enumerate(self.image_paths):
+                should_skip = False
+                if self.phase == 'train':
+                    # Skip seq 5/ frame00593
+                    if 'seq5/frame00297' in path:
+                        should_skip = True
+                        print(f"[WARNING]Skipping {path} in training set")
+                if not should_skip:
+                    keep_indices.append(i)
+            
+            self.image_paths = [self.image_paths[i] for i in keep_indices]
+            self.poses = self.poses[keep_indices]
+
+        # Add root to paths
         self.mean_image = None
         if opt.model != "poselstm":
             mean_image_path = os.path.join(self.root, 'mean_image.npy')

@@ -95,6 +95,87 @@ checkpoints/
 | Dataset       | beta | PoseNet(Report) | PoseNet(reproduce) | PoseLSTM(Report) | PoseLSTM(reproduce) |
 | ------------- |:----:|:---------------:|:------------------:| :----: | :----: |
 | KingsCollege  | 500  |   1.92m 5.40°   |  **1.37m 2.82°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| OldHospital  | 1500 |   2.31m 5.38°   |  **2.44m 4.29°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| ShopFacade  | 100  |   1.46m 8.08°   |  **1.28m 8.39°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| StMarysChurch  | 250  |   2.65m 8.48°   |  **1.93m 6.79°**   | 0.99m 3.65° | **0.94m 2.61°**|
+| OldHospital  | 1500 |   2.31m 5.38°   |  **2.44m 4.29°**   | 1.51 m, 4.29° | **2.05m 3.59°**|
+| ShopFacade  | 100  |   1.46m 8.08°   |  **1.28m 8.39°**   | 1.18 m, 7.44° | **1.02m 8.04°**|
+| StMarysChurch  | 250  |   2.65m 8.48°   |  **1.93m 6.79°**   | 1.52 m, 6.68° | **1.87 6.68°**|
+| Street  | 2000 |   3.67m, 6.50°   |  **7.39m 9.65°**   | - | - |
+
+## 8.实验结果
+
+<table align="center">
+    <tr>
+        <th rowspan="2" align="center">Method</th>
+        <th colspan="4" align="center">Cambridge Landmarks</th>
+        <th colspan="7" align="center">7-Scenes</th>
+    </tr>
+    <tr>
+        <th align="center">KingsCollege</th>
+        <th align="center">OldHospital</th>
+        <th align="center">ShopFacade</th>
+        <th align="center">StMarysChurch</th>
+        <th align="center">Chess</th>
+        <th align="center">Fire</th>
+        <th align="center">Heads</th>
+        <th align="center">Office</th>
+        <th align="center">Pumpkin</th>
+        <th align="center">RedKitchen</th>
+        <th align="center">Stairs</th>
+    </tr>
+    <tr>
+        <td align="center">PoseNet</td>
+        <td align="center">1.92m, 5.40°</td>
+        <td align="center">2.31m, 5.38°</td>
+        <td align="center">1.46m, 8.08°</td>
+        <td align="center">2.65m, 8.48°</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+    </tr>
+    <tr>
+        <td align="center">PoseLSTM</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+    </tr>
+    <tr>
+        <td align="center">PoseTransformer</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+    </tr>
+    <tr>
+        <td align="center">PoseFPN</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+        <td align="center">-</td>
+    </tr>
+</table>
+

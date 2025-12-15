@@ -6,6 +6,7 @@ import numpy
 from data.data_loader import CreateDataLoader
 from models.models import create_model
 from util import util
+from util import geometry_utils
 
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -17,6 +18,7 @@ def parse_args():
     parser.add_argument('--input_nc', type=int, default=3, help='# of input image channels')
     parser.add_argument('--output_nc', type=int, default=7, help='# of output image channels')
     parser.add_argument('--lstm_hidden_size', type=int, default=256, help='hidden size of the LSTM layer in PoseLSTM')
+    parser.add_argument('--transformer_hidden_size', type=int, default=256, help='hidden size of the Transformer layer in PoseTransformer')
     parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
     parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment. It decides where to store samples and models')
     parser.add_argument('--model', type=str, default='posenet', help='chooses which model to use. [posenet | poselstm | resnet50]')
@@ -66,9 +68,7 @@ def parse_args():
     return opt
 
 opt = parse_args()
-opt.nThreads = 1   # test code only supports nThreads = 1
-opt.batchSize = 1  # test code only supports batchSize = 1
-opt.serial_batches = True  # no shuffle
+opt.serial_batches = True
 
 data_loader = CreateDataLoader(opt)
 dataset = data_loader
@@ -77,7 +77,7 @@ results_dir = os.path.join(opt.results_dir, opt.name)
 if not os.path.exists(results_dir):
     os.makedirs(results_dir)
 
-besterror  = [0, float('inf'), float('inf')] # nepoch, medX, medQ
+besterror  = [0, float('inf'), float('inf'), float('inf')] # nepoch, medX, medQ, medReproj
 
 import glob
 expr_dir = os.path.join(opt.checkpoints_dir, opt.name)
@@ -93,13 +93,24 @@ for f in files:
         pass
 epochs.sort()
 if opt.model == 'posenet':
-    testepochs = epochs[-10:] # Take last 10 epochs
+    testepochs = epochs
 else:
-    testepochs = epochs[-50:]  # Take last 50 epochs
+    testepochs = epochs 
 print("Testing epochs:", testepochs)
 
+# Setup for Reprojection Error
+nvm_path = 'reconstruction.nvm'
+focal_length = geometry_utils.get_focal_length_from_nvm(nvm_path)
+if focal_length is None:
+    print("Warning: Could not read focal length from reconstruction.nvm. Using default 1670.")
+    focal_length = 1670.0
+
+# Original size for KingsCollege is 1920x1080
+K = geometry_utils.get_intrinsics(focal_length, (256, 256), (opt.fineSize, opt.fineSize))
+print(f"Using Intrinsic Matrix:\n{K}")
+
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')
-testfile.write('epoch medX  medQ\n')
+testfile.write('epoch median_Pos  median_Ori  median_Reproj\n')
 testfile.write('==================\n')
 
 model = create_model(opt)
@@ -108,36 +119,46 @@ for testepoch in testepochs:
     model.load_network(model.netG, 'G', testepoch)
     
     # test
-    # err_pos = []
-    # err_ori = []
     err = []
     print("epoch: "+ str(testepoch))
     for i, data in enumerate(dataset):
         model.set_input(data)
         model.test()
-        img_path = model.get_image_paths()[0]
-        print('\t%04d/%04d: process image... %s' % (i, len(dataset), img_path), end='\r')
-        image_path = img_path.split('/')[-2] + '/' + img_path.split('/')[-1]
-        pose = model.get_current_pose()
-        util.save_estimated_pose(image_path, pose)
-        err_p, err_o = model.get_current_errors()
-        # err_pos.append(err_p)
-        # err_ori.append(err_o)
-        err.append([err_p, err_o])
+        
+        # Batch processing
+        img_paths = model.get_image_paths()
+        poses = model.get_current_pose() # (B, 7)
+        pos_errs, ori_errs = model.get_current_errors() # (B,), (B,)
+        
+        gt_poses = model.input_B.cpu().numpy() # (B, 7)
+        
+        for b in range(len(img_paths)):
+            img_path = img_paths[b]
+            # print('\t%04d/%04d: process image... %s' % (i*opt.batchSize + b, len(dataset), img_path), end='\r')
+            image_path = img_path.split('/')[-2] + '/' + img_path.split('/')[-1]
+            
+            pose = poses[b]
+            gt_pose = gt_poses[b]
+            
+            util.save_estimated_pose(image_path, pose)
+            
+            # Calculate Reprojection Error for single item
+            reproj_err = geometry_utils.compute_reprojection_error(gt_pose, pose, K)
+            
+            err.append([pos_errs[b], ori_errs[b], reproj_err])
 
     median_pos = numpy.median(err, axis=0)
     if median_pos[0] < besterror[1]:
-        besterror = [testepoch, median_pos[0], median_pos[1]]
+        besterror = [testepoch, median_pos[0], median_pos[1], median_pos[2]]
     print()
-    # print("median position: {0:.2f}".format(numpy.median(err_pos)))
-    # print("median orientat: {0:.2f}".format(numpy.median(err_ori)))
-    print("\tmedian wrt pos.: {0:.2f}m {1:.2f}°".format(median_pos[0], median_pos[1]))
-    testfile.write("{0:<5} {1:.2f}m {2:.2f}°\n".format(testepoch,
+    print("\tmedian wrt pos.: {0:.2f}m {1:.2f}° {2:.2f}px".format(median_pos[0], median_pos[1], median_pos[2]))
+    testfile.write("{0:<5} {1:.2f}m {2:.2f}° {3:.2f}px\n".format(testepoch,
                                                      median_pos[0],
-                                                     median_pos[1]))
+                                                     median_pos[1],
+                                                     median_pos[2]))
     testfile.flush()
-print("{0:<5} {1:.2f}m {2:.2f}°\n".format(*besterror))
+print("{0:<5} {1:.2f}m {2:.2f}° {3:.2f}px\n".format(*besterror))
 testfile.write('-----------------\n')
-testfile.write("{0:<5} {1:.2f}m {2:.2f}°\n".format(*besterror))
+testfile.write("{0:<5} {1:.2f}m {2:.2f}° {3:.2f}px\n".format(*besterror))
 testfile.write('==================\n')
 testfile.close()
