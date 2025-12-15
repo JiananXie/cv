@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('--max_dataset_size', type=int, default=float("inf"), help='Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.')
     parser.add_argument('--seed', type=int, default=42, help='initial random seed for deterministic results')
     parser.add_argument('--beta', type=float, default=500, help='beta factor used in posenet.')
-    parser.add_argument('--loss_type', type=str, default='mse', help='type of loss function to use: [mse | geo]')
+    parser.add_argument('--loss_type', type=str, default='mse', help='type of loss function to use: [mse | geo | l2]')
 
     # Train options
     parser.add_argument('--display_freq', type=int, default=100, help='frequency of showing training results on screen')

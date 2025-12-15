@@ -87,11 +87,30 @@ class PoseDataset(data.Dataset):
                 x = np.random.randint(0, w - size)
                 y = np.random.randint(0, h - size)
                 arr = arr[y:y+size, x:x+size, :]
+            return torch.from_numpy(arr.transpose((2, 0, 1))).float()
         else:
-            # Center crop
-            x = int(round((w - size) / 2.))
-            y = int(round((h - size) / 2.))
-            arr = arr[y:y+size, x:x+size, :]
-            
-        # 4. To Tensor (HWC -> CHW)
-        return torch.from_numpy(arr.transpose((2, 0, 1))).float()
+            if hasattr(self.opt, 'tta') and self.opt.tta:
+                crops = []
+                # Center
+                x_c = int(round((w - size) / 2.))
+                y_c = int(round((h - size) / 2.))
+                crops.append(arr[y_c:y_c+size, x_c:x_c+size, :])
+                # Top-Left
+                crops.append(arr[0:size, 0:size, :])
+                # Top-Right
+                crops.append(arr[0:size, w-size:w, :])
+                # Bottom-Left
+                crops.append(arr[h-size:h, 0:size, :])
+                # Bottom-Right
+                crops.append(arr[h-size:h, w-size:w, :])
+                
+                crop_tensors = []
+                for crop in crops:
+                    crop_tensors.append(torch.from_numpy(crop.transpose((2, 0, 1))).float())
+                return torch.stack(crop_tensors)
+            else:
+                # Center crop
+                x = int(round((w - size) / 2.))
+                y = int(round((h - size) / 2.))
+                arr = arr[y:y+size, x:x+size, :]
+                return torch.from_numpy(arr.transpose((2, 0, 1))).float()

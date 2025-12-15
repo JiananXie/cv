@@ -7,10 +7,45 @@ from torch.autograd import Variable
 from torch.optim import lr_scheduler
 import numpy as np
 import torchvision
+import math
 
 ###############################################################################
 # Functions
 ###############################################################################
+class PositionEmbeddingSine(nn.Module):
+    """
+    This is a more standard version of the position embedding, very similar to the one
+    used by the Attention is All You Need paper, generalized to work on images.
+    """
+    def __init__(self, num_pos_feats=64, temperature=10000, normalize=False):
+        super().__init__()
+        self.num_pos_feats = num_pos_feats
+        self.temperature = temperature
+        self.normalize = normalize
+        self.scale = 2 * math.pi
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        mask = torch.zeros((x.shape[0], x.shape[2], x.shape[3]), dtype=torch.bool, device=x.device)
+        not_mask = ~mask
+        y_embed = not_mask.cumsum(1, dtype=torch.float32)
+        x_embed = not_mask.cumsum(2, dtype=torch.float32)
+        if self.normalize:
+            eps = 1e-6
+            y_embed = y_embed / (y_embed[:, -1:, :] + eps) * self.scale
+            x_embed = x_embed / (x_embed[:, :, -1:] + eps) * self.scale
+
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
+
+        pos_x = x_embed[:, :, :, None] / dim_t
+        pos_y = y_embed[:, :, :, None] / dim_t
+        
+        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        return pos
+
 def weight_init_googlenet(key, module, weights=None):
 
     if key == "LSTM":
@@ -19,7 +54,7 @@ def weight_init_googlenet(key, module, weights=None):
                 init.constant_(param, 0.0)
             elif 'weight' in name:
                 init.xavier_normal_(param)
-    elif weights is None:
+    elif weights is None or (key+"_1").encode() not in weights:
         init.constant_(module.bias.data, 0.0)
         if key == "XYZ":
             init.normal_(module.weight.data, 0.0, 0.5)
@@ -91,7 +126,26 @@ class RegressionHead(nn.Module):
         self.dropout = nn.Dropout(p=dropout_rate)
         
         # Projection
-        if lossID != "loss3":
+        if head_type == 'transformer':
+            self.d_model = hidden_size if hidden_size is not None else 128
+            # Use 1x1 conv to project to d_model, preserving spatial dimensions
+            self.projection = weight_init_googlenet(lossID+"/proj_trans", nn.Conv2d(input_dim, self.d_model, kernel_size=1), weights)
+            self.cls_fc_pose = None # Not used for transformer
+            self.feature_dim = self.d_model
+            
+            # Fixed 2D Sine/Cosine Position Embedding
+            self.pos_embedding = PositionEmbeddingSine(self.d_model // 2, normalize=True)
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, self.d_model))
+            nn.init.trunc_normal_(self.cls_token, std=0.02)
+            # Learnable position for CLS token only
+            self.cls_pos = nn.Parameter(torch.zeros(1, 1, self.d_model))
+            nn.init.trunc_normal_(self.cls_pos, std=0.02)
+            
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model*4, dropout=0.5, batch_first=True)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
+            self.out_dim = self.d_model
+
+        elif lossID != "loss3":
             self.projection = nn.Sequential(*[
                 nn.AdaptiveAvgPool2d((4, 4)),
                 weight_init_googlenet(lossID+"/conv", nn.Conv2d(input_dim, 128, kernel_size=1), weights),
@@ -120,16 +174,8 @@ class RegressionHead(nn.Module):
             self.out_dim = self.lstm_hidden_size * 4
             
         elif head_type == 'transformer':
-            self.d_model = hidden_size if hidden_size is not None else 128
-            self.seq_len = 32
-            self.embedding = nn.Linear(self.token_dim, self.d_model)
-            self.cls_token = nn.Parameter(torch.zeros(1, 1, self.d_model))
-            nn.init.trunc_normal_(self.cls_token, std=0.02)
-            self.pos_encoder = nn.Parameter(torch.zeros(1, self.seq_len + 1, self.d_model))
-            nn.init.trunc_normal_(self.pos_encoder, std=0.02)
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model*4, dropout=0.5, batch_first=True)
-            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
-            self.out_dim = self.d_model
+            # Already handled above
+            pass
             
         else: # 'fc'
             self.out_dim = self.feature_dim
@@ -140,6 +186,35 @@ class RegressionHead(nn.Module):
 
     def forward(self, input):
         output = self.projection(input)
+        
+        if self.head_type == 'transformer':
+            # output is (B, d_model, H, W)
+            # Generate 2D Positional Embeddings
+            pos = self.pos_embedding(output) # (B, d_model, H, W)
+            
+            B, C, H, W = output.size()
+            # Flatten spatial dimensions: (B, C, H*W) -> (B, H*W, C)
+            output = output.flatten(2).permute(0, 2, 1)
+            pos = pos.flatten(2).permute(0, 2, 1)
+            
+            cls_tokens = self.cls_token.expand(B, -1, -1)
+            cls_pos = self.cls_pos.expand(B, -1, -1)
+            
+            x = torch.cat((cls_tokens, output), dim=1) # (B, L+1, C)
+            pos = torch.cat((cls_pos, pos), dim=1)     # (B, L+1, C)
+            
+            x = x + pos
+            
+            x = self.transformer_encoder(x)
+            output = x[:, 0, :] # Take CLS token
+            output = self.dropout(output)
+            
+            output_xy = self.cls_fc_xy(output)
+            output_wpqr = self.cls_fc_wpqr(output)
+            output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+            return [output_xy, output_wpqr]
+
+        # For FC and LSTM, we need flattened input
         output = self.cls_fc_pose(output.view(output.size(0), -1))
         
         if self.head_type == 'lstm':
@@ -150,16 +225,6 @@ class RegressionHead(nn.Module):
                                 hidden_state_lr[1,:,:],
                                 hidden_state_ud[0,:,:],
                                 hidden_state_ud[1,:,:]), 1)
-                                
-        elif self.head_type == 'transformer':
-            B = output.size(0)
-            output = output.view(B, 32, -1)
-            x = self.embedding(output)
-            cls_tokens = self.cls_token.expand(B, -1, -1)
-            x = torch.cat((cls_tokens, x), dim=1)
-            x = x + self.pos_encoder
-            x = self.transformer_encoder(x)
-            output = x[:, 0, :]
             
         output = self.dropout(output)
         output_xy = self.cls_fc_xy(output)
@@ -256,24 +321,24 @@ class PoseNet(nn.Module):
             
             if self.use_fpn:
                 # FPN Lateral Layers
-                self.lat_layer1 = nn.Conv2d(512, 256, kernel_size=1)
-                self.lat_layer2 = nn.Conv2d(528, 256, kernel_size=1)
-                self.lat_layer3 = nn.Conv2d(1024, 256, kernel_size=1)
+                self.lat_layer1 = nn.Conv2d(512, 128, kernel_size=1)
+                self.lat_layer2 = nn.Conv2d(528, 128, kernel_size=1)
+                self.lat_layer3 = nn.Conv2d(1024, 128, kernel_size=1)
                 
-                self.smooth_layer1 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
-                self.smooth_layer2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
-                self.smooth_layer3 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+                self.smooth_layer1 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+                self.smooth_layer2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+                self.smooth_layer3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
                 
                 self.fpn_head = nn.Sequential(
-                    nn.Linear(768, 1024),
+                    nn.Linear(384, 512),
                     nn.ReLU(inplace=True),
                     nn.Dropout(0.5),
-                    nn.Linear(1024, 1024),
+                    nn.Linear(512, 512),
                     nn.ReLU(inplace=True),
                     nn.Dropout(0.5)
                 )
-                self.reg_xy = nn.Linear(1024, 3)
-                self.reg_wpqr = nn.Linear(1024, 4)
+                self.reg_xy = nn.Linear(512, 3)
+                self.reg_wpqr = nn.Linear(512, 4)
                 
                 # Init FPN weights
                 for m in [self.lat_layer1, self.lat_layer2, self.lat_layer3, 
@@ -346,6 +411,54 @@ class PoseNet(nn.Module):
                 # FPN Forward
                 p5 = self.lat_layer3(output_5b)
                 c4_lat = self.lat_layer2(output_4d)
+                p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest')
+                p4 = c4_lat + p5_up
+                
+                c3_lat = self.lat_layer1(output_4a)
+                p4_up = p4 
+                p3 = c3_lat + p4_up
+                
+                p5 = self.smooth_layer3(p5)
+                p4 = self.smooth_layer2(p4)
+                p3 = self.smooth_layer1(p3)
+                
+                f5 = F.adaptive_avg_pool2d(p5, (1, 1)).view(p5.size(0), -1)
+                f4 = F.adaptive_avg_pool2d(p4, (1, 1)).view(p4.size(0), -1)
+                f3 = F.adaptive_avg_pool2d(p3, (1, 1)).view(p3.size(0), -1)
+                
+                features = torch.cat([f3, f4, f5], dim=1)
+                x = self.fpn_head(features)
+                pred_xy = self.reg_xy(x)
+                pred_wpqr = self.reg_wpqr(x)
+                pred_wpqr = F.normalize(pred_wpqr, p=2, dim=1)
+                
+                main_out = [pred_xy, pred_wpqr]
+            else:
+                main_out = self.cls3_fc(output_5b)
+
+            if not self.isTest:
+                aux1 = self.cls1_fc(output_4a)
+                aux2 = self.cls2_fc(output_4d)
+                return aux1 + aux2 + main_out
+            return main_out
+            
+        elif self.backbone == 'resnet50':
+            x = self.conv1(input)
+            x = self.bn1(x)
+            x = self.relu(x)
+            x = self.maxpool(x)
+            
+            x = self.layer1(x)
+            x = self.layer2(x)
+            out1 = x # 512 channels
+            
+            x = self.layer3(x)
+            out2 = x # 1024 channels
+            
+            x = self.layer4(x)
+            out3 = x # 2048 channels
+            
+            if self.use_fpn:
                 p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest')
                 p4 = c4_lat + p5_up
                 

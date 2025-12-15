@@ -54,7 +54,8 @@ class PoseNetModel(BaseModel):
             self.loss_type = opt.loss_type
             self.old_lr = opt.lr
             # define loss functions
-            self.criterion = torch.nn.MSELoss()
+            if self.loss_type == 'mse':
+                self.criterion = torch.nn.MSELoss()
             if self.loss_type == 'geo':
                 self.sx = nn.Parameter(torch.tensor(0.0))
                 self.sq = nn.Parameter(torch.tensor(-3.0))
@@ -123,26 +124,29 @@ class PoseNetModel(BaseModel):
             target_ori = F.normalize(self.input_B[:, 3:], p=2, dim=1)
             
             # Standard PoseNet Loss
-            mse_pos = self.criterion(pred_pos, target_pos)
-            mse_ori = self.criterion(pred_ori, target_ori)
+            if self.loss_type == 'mse':
+                error_pos = self.criterion(pred_pos, target_pos)
+                error_ori = self.criterion(pred_ori, target_ori)
+            else:
+                error_pos = torch.norm(pred_pos - target_pos, p=2, dim=1).mean()
+                error_ori = torch.norm(pred_ori - target_ori, p=2, dim=1).mean()
             
             # Reprojection Loss (Geometric Consistency)
             reproj_loss = self.reprojection_loss(pred_pos, pred_ori, target_pos, target_ori)
             
             # Combine losses
             if self.loss_type == 'geo':
-                loss_pos = torch.exp(-self.sx) * mse_pos + self.sx
-                loss_ori = torch.exp(-self.sq) * mse_ori + self.sq
+                loss_pos = torch.exp(-self.sx) * error_pos + self.sx
+                loss_ori = torch.exp(-self.sq) * error_ori + self.sq
                 total_loss = loss_pos + loss_ori
             else:
-                total_loss = mse_pos + mse_ori * self.opt.beta
-
+                total_loss = error_pos + error_ori * self.opt.beta
             gamma = 0.1 
             # total_loss += reproj_loss * gamma
             
             self.loss_G += total_loss * w
-            self.loss_pos += mse_pos.item() * w
-            self.loss_ori += mse_ori.item() * w * self.opt.beta
+            self.loss_pos += error_pos.item() * w
+            self.loss_ori += error_ori.item() * w * self.opt.beta
             self.loss_reproj += reproj_loss.item() * w
 
         self.loss_G.backward()

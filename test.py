@@ -36,6 +36,7 @@ def parse_args():
     # Test options
     parser.add_argument('--results_dir', type=str, default='./results/', help='saves results here.')
     parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
+    parser.add_argument('--tta', action='store_true', help='enable test time augmentation (5 crops)')
 
     opt = parser.parse_args()
     opt.isTrain = False
@@ -99,13 +100,12 @@ else:
 print("Testing epochs:", testepochs)
 
 # Setup for Reprojection Error
-nvm_path = 'reconstruction.nvm'
+nvm_path = 'datasets/KingsCollege/reconstruction.nvm'
 focal_length = geometry_utils.get_focal_length_from_nvm(nvm_path)
 if focal_length is None:
     print("Warning: Could not read focal length from reconstruction.nvm. Using default 1670.")
     focal_length = 1670.0
 
-# Original size for KingsCollege is 1920x1080
 K = geometry_utils.get_intrinsics(focal_length, (256, 256), (opt.fineSize, opt.fineSize))
 print(f"Using Intrinsic Matrix:\n{K}")
 
@@ -122,15 +122,62 @@ for testepoch in testepochs:
     err = []
     print("epoch: "+ str(testepoch))
     for i, data in enumerate(dataset):
-        model.set_input(data)
-        model.test()
         
-        # Batch processing
-        img_paths = model.get_image_paths()
-        poses = model.get_current_pose() # (B, 7)
-        pos_errs, ori_errs = model.get_current_errors() # (B,), (B,)
-        
-        gt_poses = model.input_B.cpu().numpy() # (B, 7)
+        if opt.tta:
+            print("[INFO] Performing Test Time Augmentation (5 crops)...")
+            B, N, C, H, W = data['A'].size()
+            input_A = data['A'].view(B*N, C, H, W)
+            input_B = data['B'].repeat_interleave(N, dim=0)
+            
+            data_tta = {'A': input_A, 'B': input_B, 'A_paths': []}
+            for p in data['A_paths']:
+                for _ in range(N):
+                    data_tta['A_paths'].append(p)
+            
+            model.set_input(data_tta)
+            model.test()
+            
+            poses_all = model.get_current_pose() # (B*N, 7) numpy
+            poses_all = torch.from_numpy(poses_all)
+            poses_all = poses_all.view(B, N, 7)
+            
+            pos_avg = torch.mean(poses_all[:, :, 0:3], dim=1)
+            ori_avg = torch.mean(poses_all[:, :, 3:7], dim=1)
+            ori_avg = torch.nn.functional.normalize(ori_avg, p=2, dim=1)
+            
+            poses = torch.cat([pos_avg, ori_avg], dim=1).numpy()
+            
+            gt_poses = data['B'].numpy()
+            img_paths = data['A_paths']
+            
+            pos_errs = []
+            ori_errs = []
+            for b in range(B):
+                p_err = numpy.linalg.norm(poses[b, 0:3] - gt_poses[b, 0:3])
+                pos_errs.append(p_err)
+                
+                q1 = poses[b, 3:7]
+                q2 = gt_poses[b, 3:7]
+                q1 = q1 / (numpy.linalg.norm(q1) + 1e-8)
+                q2 = q2 / (numpy.linalg.norm(q2) + 1e-8)
+                d = abs(numpy.sum(numpy.multiply(q1, q2)))
+                d = min(1.0, max(-1.0, d))
+                theta = 2 * numpy.arccos(d) * 180 / numpy.pi
+                ori_errs.append(theta)
+            
+            pos_errs = numpy.array(pos_errs)
+            ori_errs = numpy.array(ori_errs)
+            
+        else:
+            model.set_input(data)
+            model.test()
+            
+            # Batch processing
+            img_paths = model.get_image_paths()
+            poses = model.get_current_pose() # (B, 7)
+            pos_errs, ori_errs = model.get_current_errors() # (B,), (B,)
+            
+            gt_poses = model.input_B.cpu().numpy() # (B, 7)
         
         for b in range(len(img_paths)):
             img_path = img_paths[b]
