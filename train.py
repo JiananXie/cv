@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument('--no_dropout', action='store_true', help='no dropout for the generator')
     parser.add_argument('--max_dataset_size', type=int, default=float("inf"), help='Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.')
     parser.add_argument('--seed', type=int, default=42, help='initial random seed for deterministic results')
+    parser.add_argument('--loss_type', type=str, default='mse', help='type of loss function to use: [mse | geo | l2]')
     parser.add_argument('--beta', type=float, default=500, help='beta factor used in posenet.')
 
     # Train options
@@ -50,6 +51,8 @@ def parse_args():
     parser.add_argument('--lr_policy', type=str, default='lambda', help='learning rate policy: lambda|step|plateau')
     parser.add_argument('--lr_decay_iters', type=int, default=50, help='multiply by a gamma every lr_decay_iters iterations')
     parser.add_argument('--init_weights', type=str, default='pretrained_models/places-googlenet.pickle', help='initiliaze network from, e.g., pretrained_models/places-googlenet.pickle')
+    parser.add_argument('--max_range', type=int, default=25, help='range of ref index')
+    parser.add_argument('--img_ret', action='store_true', help='use image retrieval')
 
     opt = parser.parse_args()
     opt.isTrain = True

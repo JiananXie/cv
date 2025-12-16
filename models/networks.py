@@ -61,6 +61,8 @@ def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=Fal
         netG = PoseLSTM(input_nc, lstm_hidden_size, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
     elif model == 'resnet50':
         netG = PoseResNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
+    elif model == "SiamPoseNet":
+        netG = SiamPoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
     else:
         raise NotImplementedError('Model name [%s] is not recognized' % model)
     if len(gpu_ids) > 0:
@@ -107,7 +109,8 @@ class RegressionHead(nn.Module):
 
     def forward(self, input):
         output = self.projection(input)
-        output = self.cls_fc_pose(output.view(output.size(0), -1))
+        # output = self.cls_fc_pose(output.view(output.size(0), -1))
+        output = self.cls_fc_pose(output.reshape(output.size(0), -1))
         if self.has_lstm:
             output = output.view(output.size(0),32, -1)
             _, (hidden_state_lr, _) = self.lstm_pose_lr(output.permute(0,1,2))
@@ -284,12 +287,11 @@ class PoseResNet(nn.Module):
         return self.cls3_fc(out3)
 
 class PoseLSTM(PoseNet):
-    def __init__(self, input_nc, lstm_hidden_size, weights=None, isTest=False,  gpu_ids=[]):
+    def __init__(self, input_nc, lstm_hidden_size, weights=None, isTest=False, gpu_ids=[]):
             super(PoseLSTM, self).__init__(input_nc, weights, isTest, gpu_ids)
             self.cls1_fc = RegressionHead(lossID="loss1", weights=weights, lstm_hidden_size=lstm_hidden_size)
             self.cls2_fc = RegressionHead(lossID="loss2", weights=weights, lstm_hidden_size=lstm_hidden_size)
             self.cls3_fc = RegressionHead(lossID="loss3", weights=weights, lstm_hidden_size=lstm_hidden_size)
-
             self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
                                        self.inception_4a, self.inception_4b,
                                        self.inception_4c, self.inception_4d,
@@ -299,3 +301,202 @@ class PoseLSTM(PoseNet):
                                        ])
             if self.isTest:
                 self.model.eval() # ensure Dropout is deactivated during test
+
+
+class Backbone(PoseNet):
+    def __len__(self, input_nc, weights=None, isTest=False,  gpu_ids=[]):
+        super(Backbone, self).__init__(input_nc, weights, isTest, gpu_ids)
+
+    def forward(self, input):
+        output_bf = self.before_inception(input)
+        output_3a = self.inception_3a(output_bf)
+        output_3b = self.inception_3b(output_3a)
+        output_4a = self.inception_4a(output_3b)
+        output_4b = self.inception_4b(output_4a)
+        output_4c = self.inception_4c(output_4b)
+        output_4d = self.inception_4d(output_4c)
+        output_4e = self.inception_4e(output_4d)
+        output_5a = self.inception_5a(output_4e)
+        output_5b = self.inception_5b(output_5a)
+        return output_5b
+
+class SiamRegressionHead(nn.Module):
+    def __init__(self, lossID, input_dim=None, weights=None, lstm_hidden_size=None):
+        super(SiamRegressionHead, self).__init__()
+        self.has_lstm = lstm_hidden_size != None
+        dropout_rate = 0.5 if lossID == "loss3" else 0.7
+        nc_loss = {"loss1": 512*2, "loss2": 528*2, "loss3": 1024*2}
+        nc_cls = [1024, 2048] if lstm_hidden_size is None else [lstm_hidden_size*4, lstm_hidden_size*4]
+
+        self.dropout = nn.Dropout(p=dropout_rate)
+        self.dropout = nn.Dropout(p=dropout_rate)
+        if lossID != "loss3":
+            self.projection = nn.Sequential(*[nn.AvgPool2d(kernel_size=5, stride=3),
+                                              weight_init_googlenet(lossID+"/conv", nn.Conv2d(nc_loss[lossID], 128, kernel_size=1)),
+                                              nn.ReLU(inplace=True)])
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet(lossID+"/fc", nn.Linear(2048, 1024), weights),
+                                               nn.ReLU(inplace=True)])
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(nc_cls[0], 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(nc_cls[0], 4))
+            if lstm_hidden_size is not None:
+                self.lstm_pose_lr = weight_init_googlenet("LSTM", nn.LSTM(input_size=32, hidden_size=lstm_hidden_size, bidirectional=True, batch_first=True))
+                self.lstm_pose_ud = weight_init_googlenet("LSTM", nn.LSTM(input_size=32, hidden_size=lstm_hidden_size, bidirectional=True, batch_first=True))
+        else:
+            self.projection = nn.AvgPool2d(kernel_size=7, stride=1)
+            self.cls_fc_pose = nn.Sequential(*[weight_init_googlenet("pose", nn.Linear(nc_loss[lossID], 2048)),
+                                               nn.ReLU(inplace=True)])
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(nc_cls[1], 3))
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(nc_cls[1], 4))
+
+            if lstm_hidden_size is not None:
+                self.lstm_pose_lr = weight_init_googlenet("LSTM", nn.LSTM(input_size=64, hidden_size=lstm_hidden_size, bidirectional=True, batch_first=True))
+                self.lstm_pose_ud = weight_init_googlenet("LSTM", nn.LSTM(input_size=32, hidden_size=lstm_hidden_size, bidirectional=True, batch_first=True))
+
+    def forward(self, input):
+        # print(input.shape)
+        output = self.projection(input)
+        # print(output.shape)
+        # output = self.cls_fc_pose(output.view(output.size(0), -1))
+        output = self.cls_fc_pose(output.reshape(output.size(0), -1))
+        if self.has_lstm:
+            output = output.view(output.size(0), 32, -1)
+            _, (hidden_state_lr, _) = self.lstm_pose_lr(output.permute(0, 1, 2))
+            _, (hidden_state_ud, _) = self.lstm_pose_ud(output.permute(0, 2, 1))
+            output = torch.cat((hidden_state_lr[0, :, :],
+                                hidden_state_lr[1, :, :],
+                                hidden_state_ud[0, :, :],
+                                hidden_state_ud[1, :, :]), 1)
+        output = self.dropout(output)
+        output_xy = self.cls_fc_xy(output)
+        output_wpqr = self.cls_fc_wpqr(output)
+        output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+        return [output_xy, output_wpqr]
+
+
+class SiamPoseNet(PoseNet):
+    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[]):
+        super(SiamPoseNet, self).__init__(input_nc, weights, isTest, gpu_ids)
+        self.pos_embedding_1 = nn.Parameter(
+            torch.randn(1, 196, 512) * 0.02  # 随机初始化，符合ViT惯例
+        )
+        self.cross_attention_1 = nn.MultiheadAttention(
+            embed_dim=512,  # 特征维度 D = C
+            num_heads=4,
+            batch_first=True  # 使用 (B, T, D) 格式
+        )
+        self.pos_embedding_2 = nn.Parameter(
+            torch.randn(1, 196, 528) * 0.02  # 随机初始化，符合ViT惯例
+        )
+        self.cross_attention_2 = nn.MultiheadAttention(
+            embed_dim=528,  # 特征维度 D = C
+            num_heads=4,
+            batch_first=True  # 使用 (B, T, D) 格式
+        )
+        self.pos_embedding_3 = nn.Parameter(
+            torch.randn(1, 49, 1024) * 0.02  # 随机初始化，符合ViT惯例
+        )
+        self.cross_attention_3 = nn.MultiheadAttention(
+            embed_dim=1024,  # 特征维度 D = C
+            num_heads=8,
+            batch_first=True  # 使用 (B, T, D) 格式
+        )
+        self.cls1_fc = SiamRegressionHead(lossID="loss1", weights=weights)
+        self.cls2_fc = SiamRegressionHead(lossID="loss2", weights=weights)
+        self.cls3_fc = SiamRegressionHead(lossID="loss3", weights=weights)
+
+        self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
+                                     self.inception_4a, self.inception_4b,
+                                     self.inception_4c, self.inception_4d,
+                                     self.inception_4e, self.inception_5a,
+                                     self.inception_5b, self.cls1_fc,
+                                     self.cls2_fc, self.cls3_fc
+                                     ])
+        if self.isTest:
+            self.model.eval()  # ensure Dropout is deactivated during test
+
+
+    def forward(self, input_data):
+        ref, query = input_data
+        output_bf_ref = self.before_inception(ref)
+        output_3a_ref = self.inception_3a(output_bf_ref)
+        output_3b_ref = self.inception_3b(output_3a_ref)
+        output_4a_ref = self.inception_4a(output_3b_ref)
+
+        output_bf_q = self.before_inception(query)
+        output_3a_q = self.inception_3a(output_bf_q)
+        output_3b_q = self.inception_3b(output_3a_q)
+        output_4a_q = self.inception_4a(output_3b_q)
+
+        B, C, H, W = output_4a_ref.shape
+        atten_f1, _ = self.cross_attention_1(
+            query=(output_4a_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1),
+            key=(output_4a_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1),
+            value=(output_4a_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1)
+        )
+        ca_output_4a_ref = atten_f1.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_4a_ref
+
+        B, C, H, W = output_4a_q.shape
+        atten_f1, _ = self.cross_attention_1(
+            query=(output_4a_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1),
+            key=(output_4a_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1),
+            value=(output_4a_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_1)
+        )
+        ca_output_4a_q = atten_f1.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_4a_q
+
+        output_4b_ref = self.inception_4b(output_4a_ref)
+        output_4c_ref = self.inception_4c(output_4b_ref)
+        output_4d_ref = self.inception_4d(output_4c_ref)
+
+        output_4b_q = self.inception_4b(output_4a_q)
+        output_4c_q = self.inception_4c(output_4b_q)
+        output_4d_q = self.inception_4d(output_4c_q)
+
+        B, C, H, W = output_4d_ref.shape
+        atten_f2, _ = self.cross_attention_2(
+            query=(output_4d_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2),
+            key=(output_4d_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2),
+            value=(output_4d_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2)
+        )
+        ca_output_4d_ref = atten_f2.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_4d_ref
+
+        B, C, H, W = output_4d_q.shape
+        atten_f2, _ = self.cross_attention_2(
+            query=(output_4d_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2),
+            key=(output_4d_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2),
+            value=(output_4d_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_2)
+        )
+        ca_output_4d_q = atten_f2.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_4d_q
+
+        output_4e_ref = self.inception_4e(output_4d_ref)
+        output_5a_ref = self.inception_5a(output_4e_ref)
+        output_5b_ref = self.inception_5b(output_5a_ref)
+
+        output_4e_q = self.inception_4e(output_4d_q)
+        output_5a_q = self.inception_5a(output_4e_q)
+        output_5b_q = self.inception_5b(output_5a_q)
+
+        B, C, H, W = output_5b_ref.shape
+        atten_f3, _ = self.cross_attention_3(
+            query=(output_5b_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3),
+            key=(output_5b_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3),
+            value=(output_5b_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3)
+        )
+        ca_output_5b_ref = atten_f3.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_5b_ref
+
+        B, C, H, W = output_5b_q.shape
+        atten_f3, _ = self.cross_attention_3(
+            query=(output_5b_q.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3),
+            key=(output_5b_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3),
+            value=(output_5b_ref.permute(0, 2, 3, 1).reshape(B, H * W, C) + self.pos_embedding_3)
+        )
+        ca_output_5b_q = atten_f3.reshape(B, H, W, C).permute(0, 3, 1, 2) + output_5b_q
+
+        out_1 = self.cls1_fc(torch.cat([ca_output_4a_ref, ca_output_4a_q], dim=1))
+        out_2 = self.cls2_fc(torch.cat([ca_output_4d_ref, ca_output_4d_q], dim=1))
+        out_3 = self.cls3_fc(torch.cat([ca_output_5b_ref, ca_output_5b_q], dim=1))
+
+        if not self.isTest:
+            return out_1 + out_2 + out_3
+        return out_3
+
+

@@ -2,11 +2,11 @@ import torch
 from data.pose_dataset import PoseDataset
 from data.scenes_dataset import ScenesDataset
 
-def CreateDataLoader(opt):
+def CreateDataLoader(opt, model=None):
     if "cambridge" in opt.dataroot:
-        dataset = PoseDataset(opt)
+        dataset = PoseDataset(opt, model)
     elif "7scenes" in opt.dataroot:
-        dataset = ScenesDataset(opt)
+        dataset = ScenesDataset(opt, model)
     print("dataset [%s] was created" % (type(dataset).__name__))
     dataloader = torch.utils.data.DataLoader(
         dataset,

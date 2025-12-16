@@ -34,6 +34,8 @@ def parse_args():
     # Test options
     parser.add_argument('--results_dir', type=str, default='./results/', help='saves results here.')
     parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
+    parser.add_argument('--max_range', type=int, default=25, help='range of ref index')
+    parser.add_argument('--img_ret', action='store_true', help='use image retrieval')
 
     opt = parser.parse_args()
     opt.isTrain = False
@@ -92,10 +94,11 @@ for f in files:
     except ValueError:
         pass
 epochs.sort()
-if opt.model == 'posenet':
-    testepochs = epochs[-10:] # Take last 10 epochs
-else:
-    testepochs = epochs[-50:]  # Take last 50 epochs
+testepochs = epochs[-10:] # Take last 10 epochs
+# if opt.model == 'posenet':
+#     testepochs = epochs[-10:] # Take last 10 epochs
+# else:
+#     testepochs = epochs[-50:]  # Take last 50 epochs
 print("Testing epochs:", testepochs)
 
 testfile = open(os.path.join(results_dir, 'test_median.txt'), 'a')
@@ -105,8 +108,10 @@ testfile.write('==================\n')
 model = create_model(opt)
 
 for testepoch in testepochs:
+    if opt.img_ret:
+        model.build_datatbase()
+        dataset = CreateDataLoader(opt, model)
     model.load_network(model.netG, 'G', testepoch)
-    
     # test
     # err_pos = []
     # err_ori = []

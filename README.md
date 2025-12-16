@@ -108,15 +108,48 @@ checkpoints/
 ```
 ## 7. 复现结果 (Reproduction Results)
 | Dataset       | beta | PoseNet(Report) | PoseNet(reproduce) | PoseLSTM(Report) | PoseLSTM(reproduce) |
-| ------------- |:----:|:---------------:|:------------------:| :----: | :----: |
-| King’s College  | 500  |   1.92m 5.40°   |  **1.37m 2.82°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Old Hospital  | 1500 |   2.31m 5.38°   |  **2.44m 4.29°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Shop Fa ̧cade  | 100  |   1.46m 8.08°   |  **1.28m 8.39°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| St Mary’s Church  | 250  |   2.65m 8.48°   |  **1.93m 6.79°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Chess  | 500  |   0.32m 8.12°   |  **0.33m 6.10°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Fire | 500  |   0.47m 14.4°   |  **0.49m 9.90°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Heads  | 500  |   0.29m 12.0°   |  **0.26m 13.54°**  | 0.99m 3.65° | **0.94m 2.61°**|
-| Office  | 500  |   0.48m 7.68°   |  **0.58m 6.81°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Pumpkin  | 500  |   0.47m 8.42°   |  **0.48m 6.92°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Red Kitchen  | 500  |   0.59m 8.64°   |  **0.73m 8.94°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| Stairs  | 500  |   0.47m 13.8°   |  **0.38m 13.02°**  | 0.99m 3.65° | **0.94m 2.61°**|
+| ------------- |:----:|:---------------:|:------------------:|:----------------:| :----: |
+| King’s College  | 500  |   1.92m 5.40°   |  **1.37m 2.82°**   |   0.99m 3.65°    | **0.94m 2.61°**|
+| Old Hospital  | 1500 |   2.31m 5.38°   |  **2.44m 4.29°**   |   1.51m 4.29°    | **0.94m 2.61°**|
+| Shop Fa ̧cade  | 100  |   1.46m 8.08°   |  **1.28m 8.39°**   |   1.18m 7.44°    | **0.94m 2.61°**|
+| St Mary’s Church  | 250  |   2.65m 8.48°   |  **1.93m 6.79°**   |   1.52m 6.68°    | **0.94m 2.61°**|
+| Chess  | 500  |   0.32m 8.12°   |  **0.33m 6.10°**   |   0.24m 5.77°    | **0.94m 2.61°**|
+| Fire | 500  |   0.47m 14.4°   |  **0.49m 9.90°**   |   0.34m 11.9°    | **0.94m 2.61°**|
+| Heads  | 500  |   0.29m 12.0°   |  **0.26m 13.54°**  |   0.21m 13.7°    | **0.94m 2.61°**|
+| Office  | 500  |   0.48m 7.68°   |  **0.58m 6.81°**   |   0.30m 8.08°    | **0.94m 2.61°**|
+| Pumpkin  | 500  |   0.47m 8.42°   |  **0.48m 6.92°**   |   0.33m 7.00°    | **0.94m 2.61°**|
+| Red Kitchen  | 500  |   0.59m 8.64°   |  **0.73m 8.94°**   |   0.37m 8.83°    | **0.94m 2.61°**|
+| Stairs  | 500  |   0.47m 13.8°   |  **0.38m 13.02°**  |   0.40m 13.7°    | **0.94m 2.61°**|
+
+## 8. SiamPoseNet(孪生网络+交叉注意力)
+训练命令
+```bash
+python train.py \
+    --model SiamPoseNet \
+    --init_weights pretrained_models/places-googlenet.pickle \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --beta 500 \
+    --gpu_ids 0
+```
+测试命令
+```bash
+python test.py \
+    --model SiamPoseNet \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --gpu_ids 0
+```
+如果想要使用图像检索功能，在测试时，请使用
+```bash
+python test.py \
+    --model SiamPoseNet \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --gpu_ids 0 \
+    --img_ret
+```
+| Method                                   | Dataset       | beta |   Result    |
+|------------------------------------------| ------------- |:----:|:-----------:|
+| Siam + Cross Attention                   | King’s College  | 500  | 1.77m 4.25° |
+| Siam + Cross Attention + Image Retrieval | King’s College  | 500  | 0.94m 3.41° |

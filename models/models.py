@@ -11,6 +11,9 @@ def create_model(opt):
     elif opt.model == 'resnet50':
         from .posenet_model import PoseNetModel
         model = PoseNetModel()
+    elif opt.model == 'SiamPoseNet':
+        from .posenet_model import SiamPoseNetModel
+        model = SiamPoseNetModel()
     else:
         raise ValueError("Model [%s] not recognized." % opt.model)
     model.initialize(opt)
