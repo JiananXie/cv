@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument('--beta', type=float, default=500, help='beta factor used in posenet.')
 
     # Test options
+    parser.add_argument('--which_epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
     parser.add_argument('--results_dir', type=str, default='./results/', help='saves results here.')
     parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
     parser.add_argument('--tta', action='store_true', help='enable test time augmentation (5 crops)')
@@ -97,10 +98,19 @@ if opt.model == 'posenet':
     testepochs = epochs
 else:
     testepochs = epochs 
+if opt.which_epoch != 'latest':
+    try:
+        which_epoch_int = int(opt.which_epoch)
+        if which_epoch_int in testepochs:
+            testepochs = [which_epoch_int]
+        else:
+            print(f"Warning: Specified epoch {opt.which_epoch} not found. Testing on all available epochs.")
+    except ValueError:
+        print(f"Warning: Invalid epoch format {opt.which_epoch}. Testing on all available epochs.")
 print("Testing epochs:", testepochs)
 
 # Setup for Reprojection Error
-nvm_path = 'datasets/KingsCollege/reconstruction.nvm'
+nvm_path = 'reconstruction.nvm'
 focal_length = geometry_utils.get_focal_length_from_nvm(nvm_path)
 if focal_length is None:
     print("Warning: Could not read focal length from reconstruction.nvm. Using default 1670.")

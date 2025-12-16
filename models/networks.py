@@ -141,7 +141,7 @@ class RegressionHead(nn.Module):
             self.cls_pos = nn.Parameter(torch.zeros(1, 1, self.d_model))
             nn.init.trunc_normal_(self.cls_pos, std=0.02)
             
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model*4, dropout=0.5, batch_first=True)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model*4, dropout=0.25, batch_first=True)
             self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
             self.out_dim = self.d_model
 

@@ -1,8 +1,10 @@
 #!/bin/bash
 
 python test.py \
-    --model poselstm\
+    --model posenet\
     --dataroot /storage/data/dengxy12025/KingsCollege/KingsCollege \
-    --name poselstm/KingsCollege/geoloss\
-    --batchSize 64 \
+    --name posenet/KingsCollege/geoloss\
+    --batchSize 8 \
+    --tta \
+    --which_epoch 2900 \
     --gpu_ids 0

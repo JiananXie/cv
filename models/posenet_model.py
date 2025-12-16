@@ -123,7 +123,7 @@ class PoseNetModel(BaseModel):
             target_pos = self.input_B[:, 0:3]
             target_ori = F.normalize(self.input_B[:, 3:], p=2, dim=1)
             
-            # Standard PoseNet Loss
+            
             if self.loss_type == 'mse':
                 error_pos = self.criterion(pred_pos, target_pos)
                 error_ori = self.criterion(pred_ori, target_ori)
