@@ -93,11 +93,17 @@ def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=Fal
     if model == 'posenet':
         netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
     elif model == 'poselstm':
+        if lstm_hidden_size is None:
+            lstm_hidden_size = 256
         netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, lstm_hidden_size=lstm_hidden_size)
     elif model == 'posetransformer':
+        if transformer_hidden_size is None:
+            transformer_hidden_size = 256
         netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, transformer_hidden_size=transformer_hidden_size)
     elif model == 'posefpn':
         netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, use_fpn=True)
+    elif model == 'poseseparate':
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, use_separate_heads=True, lstm_hidden_size=lstm_hidden_size, transformer_hidden_size=transformer_hidden_size)
     elif model == 'poseresnet50':
         netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, backbone='resnet50')
     else:
@@ -112,9 +118,10 @@ def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=Fal
 
 # defines the regression heads for googlenet
 class RegressionHead(nn.Module):
-    def __init__(self, lossID, input_dim=None, head_type='fc', hidden_size=None, weights=None):
+    def __init__(self, lossID, input_dim=None, head_type='fc', hidden_size=None, weights=None, output_type='all'):
         super(RegressionHead, self).__init__()
         self.head_type = head_type
+        self.output_type = output_type # 'all', 'xyz', or 'wpqr'
         
         # Defaults for Inception if input_dim is None
         if input_dim is None:
@@ -141,8 +148,8 @@ class RegressionHead(nn.Module):
             self.cls_pos = nn.Parameter(torch.zeros(1, 1, self.d_model))
             nn.init.trunc_normal_(self.cls_pos, std=0.02)
             
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model*4, dropout=0.25, batch_first=True)
-            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=1)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model, dropout=0.1, batch_first=True)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
             self.out_dim = self.d_model
 
         elif lossID != "loss3":
@@ -168,69 +175,84 @@ class RegressionHead(nn.Module):
 
         # Head Specifics
         if head_type == 'lstm':
+            print("[INFO] Using LSTM Head")
             self.lstm_hidden_size = hidden_size if hidden_size is not None else 256
             self.lstm_pose_lr = weight_init_googlenet("LSTM", nn.LSTM(input_size=self.token_dim, hidden_size=self.lstm_hidden_size, bidirectional=True, batch_first=True))
             self.lstm_pose_ud = weight_init_googlenet("LSTM", nn.LSTM(input_size=32, hidden_size=self.lstm_hidden_size, bidirectional=True, batch_first=True))
             self.out_dim = self.lstm_hidden_size * 4
             
         elif head_type == 'transformer':
-            # Already handled above
+            print("[INFO] Using Transformer Head")
             pass
-            
         else: # 'fc'
+            print("[INFO] Using FC Head")
             self.out_dim = self.feature_dim
 
         # Final Regressors
-        self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(self.out_dim, 3))
-        self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(self.out_dim, 4))
+        if self.output_type == 'all' or self.output_type == 'xyz':
+            self.cls_fc_xy = weight_init_googlenet("XYZ", nn.Linear(self.out_dim, 3))
+        if self.output_type == 'all' or self.output_type == 'wpqr':
+            self.cls_fc_wpqr = weight_init_googlenet("WPQR", nn.Linear(self.out_dim, 4))
 
     def forward(self, input):
         output = self.projection(input)
         
         if self.head_type == 'transformer':
-            # output is (B, d_model, H, W)
             # Generate 2D Positional Embeddings
             pos = self.pos_embedding(output) # (B, d_model, H, W)
             
             B, C, H, W = output.size()
-            # Flatten spatial dimensions: (B, C, H*W) -> (B, H*W, C)
-            output = output.flatten(2).permute(0, 2, 1)
-            pos = pos.flatten(2).permute(0, 2, 1)
+            # Flatten spatial dimensions: (B, d_model, H*W) -> (B, H*W, d_model)
+            output = output.flatten(2).permute(0, 2, 1) # [B, H*W, d_model]
+            pos = pos.flatten(2).permute(0, 2, 1) # [B, H*W, d_model]
             
-            cls_tokens = self.cls_token.expand(B, -1, -1)
-            cls_pos = self.cls_pos.expand(B, -1, -1)
+            cls_tokens = self.cls_token.expand(B, -1, -1) # [B, 1, d_model]
+            cls_pos = self.cls_pos.expand(B, -1, -1) # [B, 1, d_model]
             
-            x = torch.cat((cls_tokens, output), dim=1) # (B, L+1, C)
-            pos = torch.cat((cls_pos, pos), dim=1)     # (B, L+1, C)
+            x = torch.cat((cls_tokens, output), dim=1) # (B, L+1, d_model)
+            pos = torch.cat((cls_pos, pos), dim=1)     # (B, L+1, d_model)
             
             x = x + pos
             
-            x = self.transformer_encoder(x)
-            output = x[:, 0, :] # Take CLS token
+            x = self.transformer_encoder(x) # [B, L+1, d_model]
+            output = x[:, 0, :] # Take CLS token [B, d_model]
             output = self.dropout(output)
             
-            output_xy = self.cls_fc_xy(output)
-            output_wpqr = self.cls_fc_wpqr(output)
-            output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
-            return [output_xy, output_wpqr]
+            if self.output_type == 'xyz':
+                return self.cls_fc_xy(output)
+            elif self.output_type == 'wpqr':
+                output_wpqr = self.cls_fc_wpqr(output)
+                return F.normalize(output_wpqr, p=2, dim=1)
+            else:
+                output_xy = self.cls_fc_xy(output) # [B, 3]
+                output_wpqr = self.cls_fc_wpqr(output) # [B, 4]
+                output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+                return [output_xy, output_wpqr]
 
         # For FC and LSTM, we need flattened input
-        output = self.cls_fc_pose(output.view(output.size(0), -1))
+        output = self.cls_fc_pose(output.view(output.size(0), -1)) # [B, 1024] or [B, 2048]
         
         if self.head_type == 'lstm':
-            output = output.view(output.size(0), 32, -1)
-            _, (hidden_state_lr, _) = self.lstm_pose_lr(output.permute(0,1,2))
+            output = output.view(output.size(0), 32, -1) # [B, 32, 32]
+            _, (hidden_state_lr, _) = self.lstm_pose_lr(output.permute(0,1,2)) # [B, 32, 32] -> [B, 32, 256*2]
             _, (hidden_state_ud, _) = self.lstm_pose_ud(output.permute(0,2,1))
             output = torch.cat((hidden_state_lr[0,:,:],
                                 hidden_state_lr[1,:,:],
                                 hidden_state_ud[0,:,:],
-                                hidden_state_ud[1,:,:]), 1)
+                                hidden_state_ud[1,:,:]), 1) # [B, 256*4]
             
         output = self.dropout(output)
-        output_xy = self.cls_fc_xy(output)
-        output_wpqr = self.cls_fc_wpqr(output)
-        output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
-        return [output_xy, output_wpqr]
+        
+        if self.output_type == 'xyz':
+            return self.cls_fc_xy(output)
+        elif self.output_type == 'wpqr':
+            output_wpqr = self.cls_fc_wpqr(output)
+            return F.normalize(output_wpqr, p=2, dim=1)
+        else:
+            output_xy = self.cls_fc_xy(output) # [B, 3]
+            output_wpqr = self.cls_fc_wpqr(output) # [B, 4]
+            output_wpqr = F.normalize(output_wpqr, p=2, dim=1)
+            return [output_xy, output_wpqr]
 
 # define inception block for GoogleNet
 class InceptionBlock(nn.Module):
@@ -265,22 +287,25 @@ class InceptionBlock(nn.Module):
         else:
             self.pool = None
 
-    def forward(self, input):
+    def forward(self, input, return_unpooled=False):
         outputs = [self.branch_x1(input), self.branch_x3(input),
                    self.branch_x5(input), self.branch_proj(input)]
         # print([[o.size()] for o in outputs])
         output = torch.cat(outputs, 1)
         if self.pool is not None:
+            if return_unpooled:
+                return self.pool(output), output
             return self.pool(output)
         return output
 
 class PoseNet(nn.Module):
-    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[], lstm_hidden_size=None, transformer_hidden_size=None, use_fpn=False, backbone='inception'):
+    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[], lstm_hidden_size=None, transformer_hidden_size=None, use_fpn=False, backbone='inception', use_separate_heads=False):
         super(PoseNet, self).__init__()
         self.gpu_ids = gpu_ids
         self.isTest = isTest
         self.use_fpn = use_fpn
         self.backbone = backbone
+        self.use_separate_heads = use_separate_heads
         
         # Determine Head Type and Config
         head_type = 'fc'
@@ -316,8 +341,14 @@ class PoseNet(nn.Module):
             self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
             self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-            self.cls1_fc = RegressionHead("loss1", input_dim=512, head_type=head_type, hidden_size=hidden_size, weights=weights)
-            self.cls2_fc = RegressionHead("loss2", input_dim=528, head_type=head_type, hidden_size=hidden_size, weights=weights)
+            if self.use_separate_heads:
+                # Head for WPQR (Orientation) using 3b unpooled (480 channels)
+                self.head_wpqr = RegressionHead("loss_wpqr", input_dim=480, head_type=head_type, hidden_size=hidden_size, weights=weights, output_type='wpqr')
+                # Head for XYZ (Position) using 4e unpooled (832 channels)
+                self.head_xyz = RegressionHead("loss_xyz", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights, output_type='xyz')
+            else:
+                self.cls1_fc = RegressionHead("loss1", input_dim=512, head_type=head_type, hidden_size=hidden_size, weights=weights)
+                self.cls2_fc = RegressionHead("loss2", input_dim=528, head_type=head_type, hidden_size=hidden_size, weights=weights)
             
             if self.use_fpn:
                 # FPN Lateral Layers
@@ -352,14 +383,20 @@ class PoseNet(nn.Module):
             else:
                 self.cls3_fc = RegressionHead("loss3", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights)
 
-            self.model = nn.Sequential(*[self.inception_3a, self.inception_3b,
-                                       self.inception_4a, self.inception_4b,
-                                       self.inception_4c, self.inception_4d,
-                                       self.inception_4e, self.inception_5a,
-                                       self.inception_5b, self.cls1_fc,
-                                       self.cls2_fc
-                                       ])
-            if not self.use_fpn:
+            layers = [self.inception_3a, self.inception_3b,
+                      self.inception_4a, self.inception_4b,
+                      self.inception_4c, self.inception_4d,
+                      self.inception_4e, self.inception_5a,
+                      self.inception_5b]
+
+            if self.use_separate_heads:
+                layers.extend([self.head_xyz, self.head_wpqr])
+            else:
+                layers.extend([self.cls1_fc, self.cls2_fc])
+
+            self.model = nn.Sequential(*layers)
+            
+            if not self.use_fpn and not self.use_separate_heads:
                 self.model.add_module("cls3_fc", self.cls3_fc)
 
             if self.isTest:
@@ -396,40 +433,56 @@ class PoseNet(nn.Module):
 
     def forward(self, input):
         if self.backbone == 'inception':
-            output_bf = self.before_inception(input)
-            output_3a = self.inception_3a(output_bf)
-            output_3b = self.inception_3b(output_3a)
-            output_4a = self.inception_4a(output_3b)
-            output_4b = self.inception_4b(output_4a)
-            output_4c = self.inception_4c(output_4b)
-            output_4d = self.inception_4d(output_4c)
-            output_4e = self.inception_4e(output_4d)
-            output_5a = self.inception_5a(output_4e)
-            output_5b = self.inception_5b(output_5a)
+            output_bf = self.before_inception(input) # [B, 192, 28, 28]
+            output_3a = self.inception_3a(output_bf) # [B, 256, 28, 28]
             
-            if self.use_fpn:
+            if self.use_separate_heads:
+                output_3b, feat_3b = self.inception_3b(output_3a, return_unpooled=True) # feat_3b: [B, 480, 28, 28]
+            else:
+                output_3b = self.inception_3b(output_3a) # [B, 480, 14, 14]
+            
+            output_4a = self.inception_4a(output_3b) # [B, 512, 14, 14]
+            output_4b = self.inception_4b(output_4a) # [B, 512, 14, 14]
+            output_4c = self.inception_4c(output_4b) # [B, 512, 14, 14]
+            output_4d = self.inception_4d(output_4c) # [B, 528, 14, 14]
+            
+            if self.use_separate_heads:
+                output_4e, feat_4e = self.inception_4e(output_4d, return_unpooled=True) # feat_4e: [B, 832, 14, 14]
+            else:
+                output_4e = self.inception_4e(output_4d) # [B, 832, 7, 7]
+            
+            output_5a = self.inception_5a(output_4e) # [B, 832, 7, 7]
+            output_5b = self.inception_5b(output_5a) # [B, 1024, 7, 7]
+            
+            if self.use_separate_heads:
+                # Predict Position (XYZ) from 4e unpooled
+                pred_xyz = self.head_xyz(output_5b)
+                # Predict Orientation (WPQR) from 3b unpooled
+                pred_wpqr = self.head_wpqr(feat_3b)
+                return [pred_xyz, pred_wpqr]
+            elif self.use_fpn:
                 # FPN Forward
-                p5 = self.lat_layer3(output_5b)
-                c4_lat = self.lat_layer2(output_4d)
-                p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest')
-                p4 = c4_lat + p5_up
+                p5 = self.lat_layer3(output_5b) # [B, 128, 7, 7]
+                c4_lat = self.lat_layer2(output_4d) # [B, 128, 14, 14]
+                p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest') # [B, 128, 14, 14]
+                p4 = c4_lat + p5_up # [B, 128, 14, 14]
                 
-                c3_lat = self.lat_layer1(output_4a)
-                p4_up = p4 
-                p3 = c3_lat + p4_up
+                c3_lat = self.lat_layer1(output_4a) # [B, 128, 14, 14]
+                p4_up = p4 # [B, 128, 14, 14]
+                p3 = c3_lat + p4_up # [B, 128, 14, 14]
                 
-                p5 = self.smooth_layer3(p5)
-                p4 = self.smooth_layer2(p4)
-                p3 = self.smooth_layer1(p3)
+                p5 = self.smooth_layer3(p5) # [B, 128, 7, 7]
+                p4 = self.smooth_layer2(p4) # [B, 128, 14, 14]
+                p3 = self.smooth_layer1(p3) # [B, 128, 14, 14]
                 
-                f5 = F.adaptive_avg_pool2d(p5, (1, 1)).view(p5.size(0), -1)
-                f4 = F.adaptive_avg_pool2d(p4, (1, 1)).view(p4.size(0), -1)
-                f3 = F.adaptive_avg_pool2d(p3, (1, 1)).view(p3.size(0), -1)
+                f5 = F.adaptive_avg_pool2d(p5, (1, 1)).view(p5.size(0), -1) # [B, 128]
+                f4 = F.adaptive_avg_pool2d(p4, (1, 1)).view(p4.size(0), -1) # [B, 128]
+                f3 = F.adaptive_avg_pool2d(p3, (1, 1)).view(p3.size(0), -1) # [B, 128]
                 
-                features = torch.cat([f3, f4, f5], dim=1)
-                x = self.fpn_head(features)
-                pred_xy = self.reg_xy(x)
-                pred_wpqr = self.reg_wpqr(x)
+                features = torch.cat([f3, f4, f5], dim=1) # [B, 384]
+                x = self.fpn_head(features) # [B, 512]
+                pred_xy = self.reg_xy(x) # [B, 3]
+                pred_wpqr = self.reg_wpqr(x) # [B, 4]
                 pred_wpqr = F.normalize(pred_wpqr, p=2, dim=1)
                 
                 main_out = [pred_xy, pred_wpqr]
@@ -443,67 +496,19 @@ class PoseNet(nn.Module):
             return main_out
             
         elif self.backbone == 'resnet50':
-            x = self.conv1(input)
+            x = self.conv1(input) # [B, 64, 112, 112]
             x = self.bn1(x)
             x = self.relu(x)
-            x = self.maxpool(x)
+            x = self.maxpool(x) # [B, 64, 56, 56]
             
-            x = self.layer1(x)
-            x = self.layer2(x)
+            x = self.layer1(x) # [B, 256, 56, 56]
+            x = self.layer2(x) # [B, 512, 28, 28]
             out1 = x # 512 channels
             
-            x = self.layer3(x)
+            x = self.layer3(x) # [B, 1024, 14, 14]
             out2 = x # 1024 channels
             
-            x = self.layer4(x)
-            out3 = x # 2048 channels
-            
-            if self.use_fpn:
-                p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest')
-                p4 = c4_lat + p5_up
-                
-                c3_lat = self.lat_layer1(output_4a)
-                p4_up = p4 
-                p3 = c3_lat + p4_up
-                
-                p5 = self.smooth_layer3(p5)
-                p4 = self.smooth_layer2(p4)
-                p3 = self.smooth_layer1(p3)
-                
-                f5 = F.adaptive_avg_pool2d(p5, (1, 1)).view(p5.size(0), -1)
-                f4 = F.adaptive_avg_pool2d(p4, (1, 1)).view(p4.size(0), -1)
-                f3 = F.adaptive_avg_pool2d(p3, (1, 1)).view(p3.size(0), -1)
-                
-                features = torch.cat([f3, f4, f5], dim=1)
-                x = self.fpn_head(features)
-                pred_xy = self.reg_xy(x)
-                pred_wpqr = self.reg_wpqr(x)
-                pred_wpqr = F.normalize(pred_wpqr, p=2, dim=1)
-                
-                main_out = [pred_xy, pred_wpqr]
-            else:
-                main_out = self.cls3_fc(output_5b)
-
-            if not self.isTest:
-                aux1 = self.cls1_fc(output_4a)
-                aux2 = self.cls2_fc(output_4d)
-                return aux1 + aux2 + main_out
-            return main_out
-            
-        elif self.backbone == 'resnet50':
-            x = self.conv1(input)
-            x = self.bn1(x)
-            x = self.relu(x)
-            x = self.maxpool(x)
-            
-            x = self.layer1(x)
-            x = self.layer2(x)
-            out1 = x # 512 channels
-            
-            x = self.layer3(x)
-            out2 = x # 1024 channels
-            
-            x = self.layer4(x)
+            x = self.layer4(x) # [B, 2048, 7, 7]
             out3 = x # 2048 channels
             
             if not self.isTest:

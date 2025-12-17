@@ -40,8 +40,8 @@ class PoseNetModel(BaseModel):
         self.mean_image = np.load(os.path.join(opt.dataroot , 'mean_image.npy'))
 
         # Handle hidden sizes for LSTM and Transformer models
-        lstm_hidden_size = opt.lstm_hidden_size if opt.model == 'poselstm' else None
-        transformer_hidden_size = opt.transformer_hidden_size if opt.model == 'posetransformer' else None
+        lstm_hidden_size = opt.lstm_hidden_size 
+        transformer_hidden_size = opt.transformer_hidden_size
 
         self.netG = networks.define_network(opt.input_nc, lstm_hidden_size, opt.model,
                                       init_from=googlenet_weights, isTest=not self.isTrain,
@@ -112,17 +112,27 @@ class PoseNetModel(BaseModel):
         self.loss_ori = 0
         self.loss_reproj = 0
         
-
-        loss_weights = [0.3, 0.3, 1]
-        loop_range = 3
+        # Check if we have separate heads (only 2 outputs: [xyz, wpqr])
+        # or standard/aux outputs (6 outputs: [xyz1, wpqr1, xyz2, wpqr2, xyz3, wpqr3])
+        if len(self.pred_B) == 2:
+            loss_weights = [1.0]
+            loop_range = 1
+        else:
+            loss_weights = [0.3, 0.3, 1]
+            loop_range = 3
+            print("[INFO] Using auxiliary losses with weights:", loss_weights)
 
         for l in range(loop_range):
             w = loss_weights[l]
-            pred_pos = self.pred_B[2*l]
-            pred_ori = self.pred_B[2*l+1]
+            if len(self.pred_B) == 2:
+                pred_pos = self.pred_B[0]
+                pred_ori = self.pred_B[1]
+            else:
+                pred_pos = self.pred_B[2*l]
+                pred_ori = self.pred_B[2*l+1]
+            
             target_pos = self.input_B[:, 0:3]
             target_ori = F.normalize(self.input_B[:, 3:], p=2, dim=1)
-            
             
             if self.loss_type == 'mse':
                 error_pos = self.criterion(pred_pos, target_pos)

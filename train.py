@@ -17,8 +17,8 @@ def parse_args():
     parser.add_argument('--fineSize', type=int, default=224, help='then crop to this size')
     parser.add_argument('--input_nc', type=int, default=3, help='# of input image channels')
     parser.add_argument('--output_nc', type=int, default=7, help='# of output image channels')
-    parser.add_argument('--lstm_hidden_size', type=int, default=256, help='hidden size of the LSTM layer in PoseLSTM')
-    parser.add_argument('--transformer_hidden_size', type=int, default=256, help='hidden size of the Transformer layer in PoseTransformer')
+    parser.add_argument('--lstm_hidden_size', type=int, default=None, help='hidden size of the LSTM layer in PoseLSTM')
+    parser.add_argument('--transformer_hidden_size', type=int, default=None, help='hidden size of the Transformer layer in PoseTransformer')
     parser.add_argument('--gpu_ids', type=str, default='0', help='gpu ids: e.g. 0  0,1,2, 0,2. use -1 for CPU')
     parser.add_argument('--name', type=str, default='experiment_name', help='name of the experiment. It decides where to store samples and models')
     parser.add_argument('--model', type=str, default='posenet', help='chooses which model to use. [posenet | poselstm | resnet50]')
@@ -123,7 +123,7 @@ def main():
             #           (epoch, total_steps))
             #     model.save('latest')
 
-        if epoch % opt.save_epoch_freq == 0:
+        if epoch % opt.save_epoch_freq == 0 and epoch >=1600:
             print('saving the model at the end of epoch %d, iters %d' %
                   (epoch, total_steps))
             model.save('latest')
