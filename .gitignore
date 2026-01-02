@@ -2,6 +2,5 @@
 /datasets
 /pretrained_models/places-googlenet.pickle
 slurm-*.out
-submit*.sh
 train_*.log
 reconstruction.nvm
