@@ -1,10 +1,10 @@
-#!/bin/bash
+  #!/bin/bash
 
 python test.py \
-    --model posenet\
-    --dataroot /storage/data/dengxy12025/KingsCollege/KingsCollege \
-    --name posenet/KingsCollege/geoloss\
-    --batchSize 8 \
-    --tta \
-    --which_epoch 2900 \
-    --gpu_ids 0
+    --model poseseparate\
+    --dataroot /storage/data/dengxy12025/7scenes/heads \
+    --name poseseparate/heads/transformer_fc\
+    --transformer_hidden_size 256 \
+    --backbone inception \
+    --batchSize 64 \
+    --gpu_ids 3

@@ -72,7 +72,7 @@ class ReprojectionLoss(nn.Module):
 
         # 3. Calculate Loss
         # Use L1 Loss (Huber/SmoothL1 is also good) for robustness against outliers
-        loss = torch.nn.functional.l1_loss(pixels_pred, pixels_gt)
+        loss = torch.nn.functional.smooth_l1_loss(pixels_pred, pixels_gt, beta=1.0)
         
         return loss
 

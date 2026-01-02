@@ -32,9 +32,9 @@ def parse_args():
     parser.add_argument('--max_dataset_size', type=int, default=float("inf"), help='Maximum number of samples allowed per dataset. If the dataset directory contains more than max_dataset_size, only a subset is loaded.')
     parser.add_argument('--seed', type=int, default=0, help='initial random seed for deterministic results')
     parser.add_argument('--beta', type=float, default=500, help='beta factor used in posenet.')
-
+    parser.add_argument('--backbone', type=str, default='inception', help='which backbone to use [inception | resnet50]')
     # Test options
-    parser.add_argument('--which_epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
+    parser.add_argument('--which_epoch', type=str, default=None, help='which epoch to load? set to latest to use latest cached model')
     parser.add_argument('--results_dir', type=str, default='./results/', help='saves results here.')
     parser.add_argument('--phase', type=str, default='test', help='train, val, test, etc')
     parser.add_argument('--tta', action='store_true', help='enable test time augmentation (5 crops)')
@@ -98,7 +98,7 @@ if opt.model == 'posenet':
     testepochs = epochs
 else:
     testepochs = epochs 
-if opt.which_epoch != 'latest':
+if opt.which_epoch:
     try:
         which_epoch_int = int(opt.which_epoch)
         if which_epoch_int in testepochs:

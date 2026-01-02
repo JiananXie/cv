@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument('--continue_train', action='store_true', help='continue training: load the latest model')
     parser.add_argument('--epoch_count', type=int, default=1, help='the starting epoch count, we save the model by <epoch_count>, <epoch_count>+<save_latest_freq>, ...')
     parser.add_argument('--phase', type=str, default='train', help='train, val, test, etc')
-    parser.add_argument('--which_epoch', type=str, default='latest', help='which epoch to load? set to latest to use latest cached model')
+    parser.add_argument('--which_epoch', type=str, default=None, help='which epoch to load? set to latest to use latest cached model')
     parser.add_argument('--n_epochs', type=int, default=500, help='number of epochs with the initial learning rate')
     parser.add_argument('--n_epochs_decay', type=int, default=0, help='number of epochs to linearly decay learning rate to zero')
     parser.add_argument('--adambeta1', type=float, default=0.9, help='first momentum term of adam')
@@ -52,7 +52,7 @@ def parse_args():
     parser.add_argument('--lr_policy', type=str, default='lambda', help='learning rate policy: lambda|step|plateau')
     parser.add_argument('--lr_decay_iters', type=int, default=50, help='multiply by a gamma every lr_decay_iters iterations')
     parser.add_argument('--init_weights', type=str, default='pretrained_models/places-googlenet.pickle', help='initiliaze network from, e.g., pretrained_models/places-googlenet.pickle')
-
+    parser.add_argument('--backbone', type=str, default='inception', help='which backbone to use: [googlenet | resnet50]')
     opt = parser.parse_args()
     opt.isTrain = True
     
@@ -123,7 +123,7 @@ def main():
             #           (epoch, total_steps))
             #     model.save('latest')
 
-        if epoch % opt.save_epoch_freq == 0 and epoch >=1600:
+        if epoch % opt.save_epoch_freq == 0:
             print('saving the model at the end of epoch %d, iters %d' %
                   (epoch, total_steps))
             model.save('latest')

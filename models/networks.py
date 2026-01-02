@@ -83,7 +83,7 @@ def get_scheduler(optimizer, opt):
     return scheduler
 
 
-def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=False, gpu_ids=[], transformer_hidden_size=None):
+def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=False, gpu_ids=[], transformer_hidden_size=None, backbone='inception'):
     netG = None
     use_gpu = len(gpu_ids) > 0
 
@@ -91,21 +91,17 @@ def define_network(input_nc, lstm_hidden_size, model, init_from=None, isTest=Fal
         assert(torch.cuda.is_available())
 
     if model == 'posenet':
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids)
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, backbone=backbone)
     elif model == 'poselstm':
         if lstm_hidden_size is None:
             lstm_hidden_size = 256
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, lstm_hidden_size=lstm_hidden_size)
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, lstm_hidden_size=lstm_hidden_size, backbone=backbone)
     elif model == 'posetransformer':
         if transformer_hidden_size is None:
             transformer_hidden_size = 256
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, transformer_hidden_size=transformer_hidden_size)
-    elif model == 'posefpn':
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, use_fpn=True)
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, transformer_hidden_size=transformer_hidden_size, backbone=backbone)
     elif model == 'poseseparate':
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, use_separate_heads=True, lstm_hidden_size=lstm_hidden_size, transformer_hidden_size=transformer_hidden_size)
-    elif model == 'poseresnet50':
-        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, backbone='resnet50')
+        netG = PoseNet(input_nc, weights=init_from, isTest=isTest, gpu_ids=gpu_ids, use_separate_heads=True, lstm_hidden_size=lstm_hidden_size, transformer_hidden_size=transformer_hidden_size, backbone=backbone)
     else:
         raise NotImplementedError('Model name [%s] is not recognized' % model)
     if len(gpu_ids) > 0:
@@ -148,10 +144,10 @@ class RegressionHead(nn.Module):
             self.cls_pos = nn.Parameter(torch.zeros(1, 1, self.d_model))
             nn.init.trunc_normal_(self.cls_pos, std=0.02)
             
-            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model, dropout=0.1, batch_first=True)
-            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=4)
+            encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=4, dim_feedforward=self.d_model, dropout=0.1, activation='gelu', batch_first=True)
+            self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=6)
             self.out_dim = self.d_model
-
+                
         elif lossID != "loss3":
             self.projection = nn.Sequential(*[
                 nn.AdaptiveAvgPool2d((4, 4)),
@@ -208,7 +204,6 @@ class RegressionHead(nn.Module):
             
             cls_tokens = self.cls_token.expand(B, -1, -1) # [B, 1, d_model]
             cls_pos = self.cls_pos.expand(B, -1, -1) # [B, 1, d_model]
-            
             x = torch.cat((cls_tokens, output), dim=1) # (B, L+1, d_model)
             pos = torch.cat((cls_pos, pos), dim=1)     # (B, L+1, d_model)
             
@@ -299,11 +294,10 @@ class InceptionBlock(nn.Module):
         return output
 
 class PoseNet(nn.Module):
-    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[], lstm_hidden_size=None, transformer_hidden_size=None, use_fpn=False, backbone='inception', use_separate_heads=False):
+    def __init__(self, input_nc, weights=None, isTest=False,  gpu_ids=[], lstm_hidden_size=None, transformer_hidden_size=None, backbone='inception', use_separate_heads=False):
         super(PoseNet, self).__init__()
         self.gpu_ids = gpu_ids
         self.isTest = isTest
-        self.use_fpn = use_fpn
         self.backbone = backbone
         self.use_separate_heads = use_separate_heads
         
@@ -316,8 +310,11 @@ class PoseNet(nn.Module):
         elif lstm_hidden_size is not None:
             head_type = 'lstm'
             hidden_size = lstm_hidden_size
+        
+        self.head_type = head_type
 
         if self.backbone == 'inception':
+            print("[INFO] Using Inception Backbone")
             self.before_inception = nn.Sequential(*[
                 weight_init_googlenet("conv1/7x7_s2", nn.Conv2d(input_nc, 64, kernel_size=7, stride=2, padding=3), weights),
                 nn.ReLU(inplace=True),
@@ -341,47 +338,28 @@ class PoseNet(nn.Module):
             self.inception_5a = InceptionBlock("5a", 832, 256, 160, 320, 32, 128, 128, weights, gpu_ids)
             self.inception_5b = InceptionBlock("5b", 832, 384, 192, 384, 48, 128, 128, weights, gpu_ids)
 
-            if self.use_separate_heads:
-                # Head for WPQR (Orientation) using 3b unpooled (480 channels)
-                self.head_wpqr = RegressionHead("loss_wpqr", input_dim=480, head_type=head_type, hidden_size=hidden_size, weights=weights, output_type='wpqr')
-                # Head for XYZ (Position) using 4e unpooled (832 channels)
-                self.head_xyz = RegressionHead("loss_xyz", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights, output_type='xyz')
+            # Initialize Auxiliary Heads (Always used for training)
+            if head_type == 'transformer':
+                self.cls1_fc_pos = RegressionHead("loss1", input_dim=512, head_type='transformer', hidden_size=hidden_size, weights=weights, output_type='xyz')
+                self.cls1_fc_ori = RegressionHead("loss1", input_dim=512, head_type='fc', hidden_size=hidden_size, weights=weights, output_type='wpqr')
+                
+                self.cls2_fc_pos = RegressionHead("loss2", input_dim=528, head_type='transformer', hidden_size=hidden_size, weights=weights, output_type='xyz')
+                self.cls2_fc_ori = RegressionHead("loss2", input_dim=528, head_type='fc', hidden_size=hidden_size, weights=weights, output_type='wpqr')
             else:
                 self.cls1_fc = RegressionHead("loss1", input_dim=512, head_type=head_type, hidden_size=hidden_size, weights=weights)
                 self.cls2_fc = RegressionHead("loss2", input_dim=528, head_type=head_type, hidden_size=hidden_size, weights=weights)
-            
-            if self.use_fpn:
-                # FPN Lateral Layers
-                self.lat_layer1 = nn.Conv2d(512, 128, kernel_size=1)
-                self.lat_layer2 = nn.Conv2d(528, 128, kernel_size=1)
-                self.lat_layer3 = nn.Conv2d(1024, 128, kernel_size=1)
-                
-                self.smooth_layer1 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-                self.smooth_layer2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-                self.smooth_layer3 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-                
-                self.fpn_head = nn.Sequential(
-                    nn.Linear(384, 512),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(0.5),
-                    nn.Linear(512, 512),
-                    nn.ReLU(inplace=True),
-                    nn.Dropout(0.5)
-                )
-                self.reg_xy = nn.Linear(512, 3)
-                self.reg_wpqr = nn.Linear(512, 4)
-                
-                # Init FPN weights
-                for m in [self.lat_layer1, self.lat_layer2, self.lat_layer3, 
-                          self.smooth_layer1, self.smooth_layer2, self.smooth_layer3,
-                          self.reg_xy, self.reg_wpqr]:
-                    if isinstance(m, nn.Conv2d):
-                        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-                    elif isinstance(m, nn.Linear):
-                        nn.init.normal_(m.weight, 0, 0.01)
-                        nn.init.constant_(m.bias, 0)
+
+            if self.use_separate_heads:
+                # Head for WPQR (Orientation) using 3b unpooled (480 channels)
+                self.head_wpqr = RegressionHead("loss_wpqr", input_dim=480, head_type='fc', hidden_size=hidden_size, weights=weights, output_type='wpqr')
+                # Head for XYZ (Position) using 4e unpooled (832 channels)
+                self.head_xyz = RegressionHead("loss_xyz", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights, output_type='xyz')
             else:
-                self.cls3_fc = RegressionHead("loss3", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights)
+                if head_type == 'transformer':
+                    self.cls3_fc_pos = RegressionHead("loss3", input_dim=1024, head_type='transformer', hidden_size=hidden_size, weights=weights, output_type='xyz')
+                    self.cls3_fc_ori = RegressionHead("loss3", input_dim=1024, head_type='fc', hidden_size=hidden_size, weights=weights, output_type='wpqr')
+                else:
+                    self.cls3_fc = RegressionHead("loss3", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights)
 
             layers = [self.inception_3a, self.inception_3b,
                       self.inception_4a, self.inception_4b,
@@ -395,15 +373,12 @@ class PoseNet(nn.Module):
                 layers.extend([self.cls1_fc, self.cls2_fc])
 
             self.model = nn.Sequential(*layers)
-            
-            if not self.use_fpn and not self.use_separate_heads:
-                self.model.add_module("cls3_fc", self.cls3_fc)
 
             if self.isTest:
                 self.model.eval() # ensure Dropout is deactivated during test
 
         elif self.backbone == 'resnet50':
-            # Load pretrained ResNet50
+            print("[INFO] Using ResNet50 Backbone")
             resnet = torchvision.models.resnet50(pretrained=True)
             if input_nc != 3:
                 resnet.conv1 = nn.Conv2d(input_nc, 64, kernel_size=7, stride=2, padding=3, bias=False)
@@ -413,23 +388,39 @@ class PoseNet(nn.Module):
             self.relu = resnet.relu
             self.maxpool = resnet.maxpool
             
-            self.layer1 = resnet.layer1
-            self.layer2 = resnet.layer2
-            self.layer3 = resnet.layer3
-            self.layer4 = resnet.layer4
+            self.layer1 = resnet.layer1 # -> 256 ch, 56x56
+            self.layer2 = resnet.layer2 # -> 512 ch, 28x28 (类似 Inception 3b/4a)
+            self.layer3 = resnet.layer3 # -> 1024 ch, 14x14
+            self.layer4 = resnet.layer4 # -> 2048 ch, 7x7  (类似 Inception 5b)
             
-            self.cls1_fc = RegressionHead("loss1", input_dim=512, head_type=head_type, hidden_size=hidden_size, weights=weights)
-            self.cls2_fc = RegressionHead("loss2", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights)
-            self.cls3_fc = RegressionHead("loss3", input_dim=2048, head_type=head_type, hidden_size=hidden_size, weights=weights)
+            # --- Separate Heads (ResNet Config) ---
+            if self.use_separate_heads:
+                # Ori Head: 接在 Layer 2 (512 ch)
+                self.head_wpqr = RegressionHead("loss_wpqr", input_dim=512, head_type='fc', 
+                                                hidden_size=hidden_size, weights=weights, output_type='wpqr')
+                
+                # Pos Head: 接在 Layer 4 (2048 ch)
+                # 必须显式传入 input_dim=2048，否则 RegressionHead 默认会用 1024
+                self.head_xyz = RegressionHead("loss_xyz", input_dim=2048, head_type=head_type, 
+                                               hidden_size=hidden_size, weights=weights, output_type='xyz')
+            else:
+                # 标准 Aux Heads
+                self.cls1_fc = RegressionHead("loss1", input_dim=512, head_type=head_type, hidden_size=hidden_size, weights=weights)
+                self.cls2_fc = RegressionHead("loss2", input_dim=1024, head_type=head_type, hidden_size=hidden_size, weights=weights)
+                self.cls3_fc = RegressionHead("loss3", input_dim=2048, head_type=head_type, hidden_size=hidden_size, weights=weights)
             
-            self.model = nn.Sequential(
-                self.conv1, self.bn1, self.relu, self.maxpool,
-                self.layer1, self.layer2, self.layer3, self.layer4,
-                self.cls1_fc, self.cls2_fc, self.cls3_fc
-            )
+            # 定义 layers 用于 .cuda() 方便
+            layers = [self.conv1, self.layer1, self.layer2, self.layer3, self.layer4]
+            if self.use_separate_heads:
+                layers.extend([self.head_wpqr, self.head_xyz])
+            else:
+                layers.extend([self.cls1_fc, self.cls2_fc, self.cls3_fc])
+            
+            self.model = nn.Sequential(*layers)
             
             if self.isTest:
                 self.model.eval()
+
 
     def forward(self, input):
         if self.backbone == 'inception':
@@ -455,64 +446,57 @@ class PoseNet(nn.Module):
             output_5b = self.inception_5b(output_5a) # [B, 1024, 7, 7]
             
             if self.use_separate_heads:
-                # Predict Position (XYZ) from 4e unpooled
-                pred_xyz = self.head_xyz(output_5b)
-                # Predict Orientation (WPQR) from 3b unpooled
                 pred_wpqr = self.head_wpqr(feat_3b)
-                return [pred_xyz, pred_wpqr]
-            elif self.use_fpn:
-                # FPN Forward
-                p5 = self.lat_layer3(output_5b) # [B, 128, 7, 7]
-                c4_lat = self.lat_layer2(output_4d) # [B, 128, 14, 14]
-                p5_up = F.interpolate(p5, size=c4_lat.shape[-2:], mode='nearest') # [B, 128, 14, 14]
-                p4 = c4_lat + p5_up # [B, 128, 14, 14]
-                
-                c3_lat = self.lat_layer1(output_4a) # [B, 128, 14, 14]
-                p4_up = p4 # [B, 128, 14, 14]
-                p3 = c3_lat + p4_up # [B, 128, 14, 14]
-                
-                p5 = self.smooth_layer3(p5) # [B, 128, 7, 7]
-                p4 = self.smooth_layer2(p4) # [B, 128, 14, 14]
-                p3 = self.smooth_layer1(p3) # [B, 128, 14, 14]
-                
-                f5 = F.adaptive_avg_pool2d(p5, (1, 1)).view(p5.size(0), -1) # [B, 128]
-                f4 = F.adaptive_avg_pool2d(p4, (1, 1)).view(p4.size(0), -1) # [B, 128]
-                f3 = F.adaptive_avg_pool2d(p3, (1, 1)).view(p3.size(0), -1) # [B, 128]
-                
-                features = torch.cat([f3, f4, f5], dim=1) # [B, 384]
-                x = self.fpn_head(features) # [B, 512]
-                pred_xy = self.reg_xy(x) # [B, 3]
-                pred_wpqr = self.reg_wpqr(x) # [B, 4]
-                pred_wpqr = F.normalize(pred_wpqr, p=2, dim=1)
-                
-                main_out = [pred_xy, pred_wpqr]
+                pred_xyz = self.head_xyz(output_5b)
+                main_out = [pred_xyz, pred_wpqr]
+                # return main_out
             else:
-                main_out = self.cls3_fc(output_5b)
+                if self.head_type == 'transformer':
+                    main_out = [self.cls3_fc_pos(output_5b), self.cls3_fc_ori(output_5b)]
+                else:
+                    main_out = self.cls3_fc(output_5b)
 
             if not self.isTest:
-                aux1 = self.cls1_fc(output_4a)
-                aux2 = self.cls2_fc(output_4d)
+                if self.head_type == 'transformer':
+                    aux1 = [self.cls1_fc_pos(output_4a), self.cls1_fc_ori(output_4a)]
+                    aux2 = [self.cls2_fc_pos(output_4d), self.cls2_fc_ori(output_4d)]
+                else:
+                    aux1 = self.cls1_fc(output_4a)
+                    aux2 = self.cls2_fc(output_4d)
                 return aux1 + aux2 + main_out
             return main_out
             
         elif self.backbone == 'resnet50':
-            x = self.conv1(input) # [B, 64, 112, 112]
+            # ================= ResNet50 Forward =================
+            x = self.conv1(input)
             x = self.bn1(x)
             x = self.relu(x)
-            x = self.maxpool(x) # [B, 64, 56, 56]
+            x = self.maxpool(x) 
             
-            x = self.layer1(x) # [B, 256, 56, 56]
-            x = self.layer2(x) # [B, 512, 28, 28]
-            out1 = x # 512 channels
+            x = self.layer1(x) 
             
-            x = self.layer3(x) # [B, 1024, 14, 14]
-            out2 = x # 1024 channels
+            # Layer 2 -> 512 channels (对应 Inception 3b/4a, 适合做 Ori)
+            feat_layer2 = self.layer2(x) 
             
-            x = self.layer4(x) # [B, 2048, 7, 7]
-            out3 = x # 2048 channels
+            x = self.layer3(feat_layer2)
             
-            if not self.isTest:
-                return self.cls1_fc(out1) + self.cls2_fc(out2) + self.cls3_fc(out3)
-            return self.cls3_fc(out3)
+            # Layer 4 -> 2048 channels (对应 Inception 5b, 适合做 Pos)
+            feat_layer4 = self.layer4(x) 
+            
+            if self.use_separate_heads:
+                # 1. 预测 Ori
+                pred_wpqr = self.head_wpqr(feat_layer2)
+                
+                # 2. 预测 Pos
+                # 将预测出的 Ori 传入 Pos Head 的 Transformer 进行 Concat 融合
+                pred_xyz = self.head_xyz(feat_layer4)
+                
+                return [pred_xyz, pred_wpqr]
+            
+            else:
+                # 如果不使用 Separate Heads，走标准流程
+                if not self.isTest:
+                     return self.cls1_fc(feat_layer2) + self.cls2_fc(x) + self.cls3_fc(feat_layer4)
+                return self.cls3_fc(feat_layer4)
 
 

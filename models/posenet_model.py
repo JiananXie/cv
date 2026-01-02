@@ -45,10 +45,15 @@ class PoseNetModel(BaseModel):
 
         self.netG = networks.define_network(opt.input_nc, lstm_hidden_size, opt.model,
                                       init_from=googlenet_weights, isTest=not self.isTrain,
-                                      gpu_ids = self.gpu_ids, transformer_hidden_size=transformer_hidden_size)
-
-        # if not self.isTrain or opt.continue_train:
-        #     self.load_network(self.netG, 'G', opt.which_epoch)
+                                      gpu_ids = self.gpu_ids, transformer_hidden_size=transformer_hidden_size,
+                                      backbone=opt.backbone)
+        if opt.which_epoch is not None:
+            if opt.continue_train :
+                print("[INFO] Resuming training from epoch %s" % opt.which_epoch)
+                self.load_network(self.netG, 'G', opt.which_epoch)
+            else:
+                print("[INFO] Loading model for testing from epoch %s" % opt.which_epoch)
+                self.load_network(self.netG, 'G', opt.which_epoch)
 
         if self.isTrain:
             self.loss_type = opt.loss_type
@@ -57,8 +62,18 @@ class PoseNetModel(BaseModel):
             if self.loss_type == 'mse':
                 self.criterion = torch.nn.MSELoss()
             if self.loss_type == 'geo':
-                self.sx = nn.Parameter(torch.tensor(0.0))
-                self.sq = nn.Parameter(torch.tensor(-3.0))
+                # 我们有3个分支，所以需要3组参数
+                # Index 0: Aux1, Index 1: Aux2, Index 2: Main
+                self.sx_params = nn.ParameterList([
+                    nn.Parameter(torch.tensor(0.0)), # Aux1 sx
+                    nn.Parameter(torch.tensor(0.0)), # Aux2 sx
+                    nn.Parameter(torch.tensor(0.0))  # Main sx
+                ])
+                self.sq_params = nn.ParameterList([
+                    nn.Parameter(torch.tensor(-3.0)), # Aux1 sq
+                    nn.Parameter(torch.tensor(-3.0)), # Aux2 sq
+                    nn.Parameter(torch.tensor(-3.0))  # Main sq
+                ])
             
             # Initialize Reprojection Loss
             # Note: Focal length needs to be accurate. 
@@ -84,6 +99,7 @@ class PoseNetModel(BaseModel):
             # for optimizer in self.optimizers:
             #     self.schedulers.append(networks.get_scheduler(optimizer, opt))
 
+        self.printed_aux_loss_info = False
         print('---------- Networks initialized -------------')
         # networks.print_network(self.netG)
         # print('-----------------------------------------------')
@@ -107,6 +123,45 @@ class PoseNetModel(BaseModel):
         return self.image_paths
 
     def backward(self):
+        # def quat_conjugate(q):
+        #     w, x, y, z = q.unbind(dim=1)
+        #     return torch.stack([w, -x, -y, -z], dim=1)
+
+        # def quat_multiply(q1, q2):
+        #     w1, x1, y1, z1 = q1.unbind(dim=1)
+        #     w2, x2, y2, z2 = q2.unbind(dim=1)
+
+        #     w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+        #     x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+        #     y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+        #     z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+
+        #     return torch.stack([w, x, y, z], dim=1)
+
+        # def log_quaternion_loss(pred_q, target_q, eps=1e-7):
+        #     # normalize (very important)
+        #     pred_q = F.normalize(pred_q, dim=1)
+        #     target_q = F.normalize(target_q, dim=1)
+
+        #     # relative quaternion
+        #     q_rel = quat_multiply(pred_q, quat_conjugate(target_q))
+
+        #     # handle q and -q equivalence
+        #     q_rel = torch.where(q_rel[:, :1] < 0, -q_rel, q_rel)
+
+        #     w = q_rel[:, 0].clamp(-1 + eps, 1 - eps)
+        #     v = q_rel[:, 1:]
+
+        #     theta = torch.acos(w)  # (B,)
+        #     sin_theta = torch.sin(theta)
+
+        #     scale = theta / (sin_theta + eps)
+        #     log_q = scale.unsqueeze(1) * v  # (B, 3)
+
+        #     # L2 loss on log map
+        #     loss = torch.mean(torch.sum(log_q ** 2, dim=1))
+        #     return loss
+        
         self.loss_G = 0
         self.loss_pos = 0
         self.loss_ori = 0
@@ -115,15 +170,21 @@ class PoseNetModel(BaseModel):
         # Check if we have separate heads (only 2 outputs: [xyz, wpqr])
         # or standard/aux outputs (6 outputs: [xyz1, wpqr1, xyz2, wpqr2, xyz3, wpqr3])
         if len(self.pred_B) == 2:
-            loss_weights = [1.0]
+            loss_weights = [{'pos': 1.0, 'ori': 1.0}]
             loop_range = 1
         else:
-            loss_weights = [0.3, 0.3, 1]
+            loss_weights = [
+                {'pos':0.3, 'ori':0.3},
+                {'pos':0.3, 'ori':0.3},
+                {'pos':1.0, 'ori':1.0}
+            ]
             loop_range = 3
-            print("[INFO] Using auxiliary losses with weights:", loss_weights)
+            if not self.printed_aux_loss_info:
+                print("[INFO] Using auxiliary losses with weights:", loss_weights)
+                self.printed_aux_loss_info = True
 
         for l in range(loop_range):
-            w = loss_weights[l]
+            # w = loss_weights[l]
             if len(self.pred_B) == 2:
                 pred_pos = self.pred_B[0]
                 pred_ori = self.pred_B[1]
@@ -144,20 +205,25 @@ class PoseNetModel(BaseModel):
             # Reprojection Loss (Geometric Consistency)
             reproj_loss = self.reprojection_loss(pred_pos, pred_ori, target_pos, target_ori)
             
+            w_pos = loss_weights[l]['pos']
+            w_ori = loss_weights[l]['ori']
             # Combine losses
             if self.loss_type == 'geo':
-                loss_pos = torch.exp(-self.sx) * error_pos + self.sx
-                loss_ori = torch.exp(-self.sq) * error_ori + self.sq
+                sx = self.sx_params[l]
+                sq = self.sq_params[l]
+
+                loss_pos = (torch.exp(-sx) * error_pos + sx) * w_pos
+                loss_ori = (torch.exp(-sq) * error_ori + sq) * w_ori
                 total_loss = loss_pos + loss_ori
             else:
-                total_loss = error_pos + error_ori * self.opt.beta
+                total_loss = error_pos * w_pos + error_ori * self.opt.beta * w_ori
             gamma = 0.1 
             # total_loss += reproj_loss * gamma
             
-            self.loss_G += total_loss * w
-            self.loss_pos += error_pos.item() * w
-            self.loss_ori += error_ori.item() * w * self.opt.beta
-            self.loss_reproj += reproj_loss.item() * w
+            self.loss_G += total_loss
+            self.loss_pos += error_pos.item()
+            self.loss_ori += error_ori.item() * self.opt.beta
+            self.loss_reproj += reproj_loss.item()
 
         self.loss_G.backward()
 

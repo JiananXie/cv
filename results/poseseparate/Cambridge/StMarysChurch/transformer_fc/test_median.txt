@@ -1,0 +1,5 @@
+epoch median_Pos  median_Ori  median_Reproj
+==================
+-----------------
+0     infm inf° infpx
+==================

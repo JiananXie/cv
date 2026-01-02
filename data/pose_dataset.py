@@ -45,9 +45,11 @@ class PoseDataset(data.Dataset):
             mean_image_path = os.path.join(self.root, 'mean_image.npy')
             if os.path.exists(mean_image_path):
                 self.mean_image = np.load(mean_image_path)
+                print("[INFO] Subtracting mean image from input images.")
             else:
                 print(f"Warning: mean_image.npy not found at {mean_image_path}, proceeding without mean subtraction.")
-
+        else:
+            print("[INFO] Not using mean image subtraction for model:", opt.model)
         self.dataset_size = len(self.image_paths)
 
     def __getitem__(self, index):
