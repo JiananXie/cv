@@ -1,0 +1,16 @@
+python visualize2d.py \
+    --dataroot /storage/data/dengxy12025/cambridge/cambridge/ShopFacade/ \
+    --name poseseparate/ShopFacade/transformer_fc \
+    --checkpoints_dir checkpoints \
+    --model poseseparate \
+    --backbone inception \
+    --transformer_hidden_size 256 \
+    --which_epoch 3350 \
+    --figsize_w 8 \
+    --auto_height \
+    --padding 0.01 \
+    --line_width 0.8 \
+    --marker_size 0.4 \
+    --swap_axes \
+    --gpu_ids 1 \
+    --batchSize 1

@@ -1,21 +1,21 @@
-# PoseNet PyTorch 复现指南
+# PoseNet PyTorch Reproduction Guide
 
-本项目实现了基于 PyTorch 的 PoseNet 模型，用于相机位姿回归任务。框架基于[poselstm-pytorch](https://github.com/hazirbas/poselstm-pytorch)修改，精简重写了代码。当前的实现基本按照Posenet原文的设置，替换了SGD为Adam优化器，尚未测试LSTM版本。
+This project implements the PoseNet model based on PyTorch for camera pose regression tasks. The framework is modified based on [poselstm-pytorch](https://github.com/hazirbas/poselstm-pytorch), with simplified and rewritten code. The current implementation basically follows the settings of the original PoseNet paper, replacing SGD with the Adam optimizer. The LSTM version has not been tested yet.
 
-## 1. 环境依赖
-含有torch和torchvision的Python环境都可以
+## 1. Environment
+Any Python environment with `torch` and `torchvision` installed should work.
 
-## 2. 数据准备
+## 2. Data Preparation
 
-### 数据集
-请将数据集放置在 `datasets/` 目录下。例如 `datasets/KingsCollege`。
-数据集结构应包含：
-- `dataset_train.txt`: 训练集列表
-- `dataset_test.txt`: 测试集列表
-- 图像文件
+### Dataset
+Please place the dataset in the `datasets/` directory. For example, `datasets/KingsCollege`.
+The dataset structure should include:
+- `dataset_train.txt`: Training set list
+- `dataset_test.txt`: Test set list
+- Image files
 
-这里提供下载KingsCollege数据集的链接：[KingsCollege Dataset](http://mi.eng.cam.ac.uk/projects/relocalisation/#dataset)。
-或者用以下命令下载并解压数据集：
+Here is the link to download the KingsCollege dataset: [KingsCollege Dataset](http://mi.eng.cam.ac.uk/projects/relocalisation/#dataset).
+Or use the following commands to download and unzip the dataset:
 ```bash
 mkdir -p datasets/
 cd datasets
@@ -25,39 +25,68 @@ unzip kingscollege_data.zip
 rm kingscollege_data.zip
 ```
 
-### 预训练模型
-按照论文的建议，使用Places预训练的GoogLeNet模型进行初始化。请下载预训练模型并放置在 `pretrained_models/` 目录下。
+### Pretrained Model
+Following the paper's suggestion, initialize with the GoogLeNet model pretrained on Places. Please download the pretrained model and place it in the `pretrained_models/` directory.
 ```bash
 mkdir -p pretrained_models/
 cd pretrained_models
 wget https://vision.in.tum.de/webarchive/hazirbas/poselstm-pytorch/places-googlenet.pickle
 ```
 
-## 3. 训练 (Training)
+## 3. Training
+Reproduce PoseNet training on the KingsCollege dataset.
 
-使用 `train.sh` 脚本或直接运行以下命令进行训练。
-
-**第一步：计算图像均值**
+**Step 1: Compute Image Mean**
 ```bash
 python util/compute_image_mean.py --dataroot datasets/KingsCollege --height 256 --width 256 --save_resized_imgs
 ```
-**这一步会裁剪图片并保存替换，只需要运行一次即可**
+**This step will crop images and save/replace them. It only needs to be run once.**
 
-**第二步：开始训练**
+**Step 2: Start Training**
 ```bash
 python train.py \
     --model posenet \
     --init_weights pretrained_models/places-googlenet.pickle \
     --dataroot ./datasets/KingsCollege \
     --name posenet/KingsCollege/beta500 \
+    --loss_type mse \
+    --backbone inception \
     --beta 500 \
+    --lr 0.0005 \
+    --n_epochs 500 \
+    --batchSize 64 \
+    --save_epoch_freq 10 \
+    --seed 42 \
     --gpu_ids 0
 ```
-参数可以自己调整，train.sh是我复现的参数，可以修改。
+Parameters can be adjusted. `train.sh` contains the parameters I used for reproduction and can be modified.
 
-## 4. 测试 (Testing)
+### PoseSeparate Training(Our proposed method)
+Standard template for training PoseSeparate:
+```bash
+echo "Step 2: Starting PoseSeparate training..."
+# 2. Train PoseSeparate
+python train.py \
+    --model poseseparate \
+    --init_weights pretrained_models/places-googlenet.pickle \
+    --dataroot datasets/KingsCollege \
+    --name poseseparate/KingsCollege/transformer_fc \
+    --backbone inception \
+    --n_epochs 4000 \
+    --lr 0.0001 \
+    --loss_type geo \
+    --gpu_ids 0 \
+    --batchSize 64 \
+    --save_epoch_freq 10 \
+    --transformer_hidden_size 256 \
+    --seed 42 > train_poseseparate_transformer_fc_KingsCollege.log 2>&1
+echo "Step 2 Finished: Training complete. Logs saved to train_poseseparate_transformer_fc_KingsCollege.log"
+```
+Note: Many hyperparameters can be explored, such as changing regression heads, backbones, or using hierarchical structures.
 
-使用 `test.sh` 脚本或运行以下命令进行评估。测试脚本会自动加载不同 epoch 的模型并在测试集上计算误差中位数，以寻找最佳模型。
+## 4. Testing
+
+Use the `test.sh` script or run the following command for evaluation. The test script will automatically load models from different epochs and calculate the median error on the test set to find the best model.
 
 ```bash
 python test.py \
@@ -67,115 +96,43 @@ python test.py \
     --gpu_ids 0
 ```
 
-## 5. 结果
-训练日志将保存在 `checkpoints/` 目录下。
-测试结果将保存在 `results/` 目录下。
+## 5. Results
+Training logs will be saved in the `checkpoints/` directory.
+Test results will be saved in the `results/` directory.
 
-## 6. 提供的模型权重 (Provided Checkpoints)
+## 6. SiamPoseNet (Siamese Network + Cross Attention)
 
-为了方便直接进行测试复现，我们单独提供了训练好的模型权重（第 490 epoch）及配置文件。
-
-请确保以下文件存在于 `checkpoints/posenet/KingsCollege/beta500/` 目录下：
-
-- `490_net_G.pth`: 模型权重
-- `opt_train.txt`: 训练配置
-- `opt_test.txt`: 测试配置
-
-如果你下载了这些文件，请按如下结构放置：
+**Training Command**
+```bash
+python train.py \
+    --model SiamPoseNet \
+    --init_weights pretrained_models/places-googlenet.pickle \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --beta 500 \
+    --gpu_ids 0
 ```
-checkpoints/
-└── posenet/
-    └── KingsCollege/
-        └── beta500/
-            ├── 490_net_G.pth
-            ├── opt_train.txt
-            └── opt_test.txt
+
+**Testing Command**
+```bash
+python test.py \
+    --model SiamPoseNet \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --gpu_ids 0
 ```
-## 7. 复现结果 (Reproduction Results)
-| Dataset       | beta | PoseNet(Report) | PoseNet(reproduce) | PoseLSTM(Report) | PoseLSTM(reproduce) |
-| ------------- |:----:|:---------------:|:------------------:| :----: | :----: |
-| KingsCollege  | 500  |   1.92m 5.40°   |  **1.37m 2.82°**   | 0.99m 3.65° | **0.94m 2.61°**|
-| OldHospital  | 1500 |   2.31m 5.38°   |  **2.44m 4.29°**   | 1.51 m, 4.29° | **2.05m 3.59°**|
-| ShopFacade  | 100  |   1.46m 8.08°   |  **1.28m 8.39°**   | 1.18 m, 7.44° | **1.02m 8.04°**|
-| StMarysChurch  | 250  |   2.65m 8.48°   |  **1.93m 6.79°**   | 1.52 m, 6.68° | **1.87 6.68°**|
-| Street  | 2000 |   3.67m, 6.50°   |  **7.39m 9.65°**   | - | - |
 
-## 8.实验结果
+If you want to use image retrieval during testing, please use:
+```bash
+python test.py \
+    --model SiamPoseNet \
+    --dataroot datasets/cambridge/KingsCollege \
+    --name SiamPoseNet/cambridge/KingsCollege/beta500 \
+    --gpu_ids 0 \
+    --img_ret
+```
 
-<table align="center">
-    <tr>
-        <th rowspan="2" align="center">Method</th>
-        <th colspan="4" align="center">Cambridge Landmarks</th>
-        <th colspan="7" align="center">7-Scenes</th>
-    </tr>
-    <tr>
-        <th align="center">KingsCollege</th>
-        <th align="center">OldHospital</th>
-        <th align="center">ShopFacade</th>
-        <th align="center">StMarysChurch</th>
-        <th align="center">Chess</th>
-        <th align="center">Fire</th>
-        <th align="center">Heads</th>
-        <th align="center">Office</th>
-        <th align="center">Pumpkin</th>
-        <th align="center">RedKitchen</th>
-        <th align="center">Stairs</th>
-    </tr>
-    <tr>
-        <td align="center">PoseNet</td>
-        <td align="center">1.92m, 5.40°</td>
-        <td align="center">2.31m, 5.38°</td>
-        <td align="center">1.46m, 8.08°</td>
-        <td align="center">2.65m, 8.48°</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-    </tr>
-    <tr>
-        <td align="center">PoseLSTM</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-    </tr>
-    <tr>
-        <td align="center">PoseTransformer</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-    </tr>
-    <tr>
-        <td align="center">PoseFPN</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-        <td align="center">-</td>
-    </tr>
-</table>
+## 7. Acknowledgement
+
+The code framework of this project references [poselstm-pytorch](https://github.com/hazirbas/poselstm-pytorch). We would like to express our gratitude.
 
